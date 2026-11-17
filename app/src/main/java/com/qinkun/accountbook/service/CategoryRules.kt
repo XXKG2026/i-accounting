@@ -102,7 +102,7 @@ object CategoryRules {
         Rule(listOf("小米粥", "苹果汁", "苹果醋"), Tier.EXCLUDE, "数码"),
 
         // ---------------- 转账 ----------------
-        Rule(listOf("转账", "红包", "AA", "提现", "收款"), Tier.STRONG, "转账"),
+        Rule(listOf("转账", "红包", "AA", "提现", "收款", "还款", "信用卡还款"), Tier.STRONG, "转账"),
     )
 
     /**

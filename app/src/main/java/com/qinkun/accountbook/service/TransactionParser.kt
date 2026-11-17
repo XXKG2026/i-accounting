@@ -22,6 +22,13 @@ object TransactionParser {
         "com.xingin.xhs" to "小红书",
         "com.ss.android.ugc.aweme" to "抖音",
         "com.ss.android.article.news" to "今日头条",
+        "com.unionpay" to "云闪付",
+        "me.ele" to "饿了么",
+        "com.smile.gifmaker" to "快手",
+        // 银行 App 待纳入：包名必须逐个在真机上核实，猜错等于没加还会留错代码。
+        // 候选：招商银行、建行、工行、农行、中行、交行、邮储、浦发、广发、民生、兴业、平安。
+        // 银行通知文案一般是「您尾号 1234 的储蓄卡消费支出人民币 12.34 元」，
+        // 含「消费/支出」+「12.34 元」，现有管线能直接处理，不需要专属关键词。
     )
 
     /** 支出关键词 */
@@ -29,14 +36,26 @@ object TransactionParser {
         "支付成功", "付款成功", "已付款", "成功付款", "支付完成",
         "消费", "扣款", "已支付", "订单支付", "扣费", "支出",
         // 「实付」是支付宝/美团最高频的金额引导词，必须认
-        "实付", "已实付", "付款金额", "支付金额", "本次消费", "扣款金额"
+        "实付", "已实付", "付款金额", "支付金额", "本次消费", "扣款金额",
+        // 转出（带方向，别用裸「转账」，否则和「收到转账」互相干扰）
+        "转账成功", "已转账", "转账支出", "转出",
+        // 充值（「充值成功，已到账」里的"到账"指服务到账，不是收款）
+        "充值成功", "已充值",
+        // 还款（「还款提醒」在 EXCLUDE_WORDS 里，不冲突）
+        "还款成功", "已还款",
+        // 提现：动作本身就是钱出去（方向由类型特判保证，不靠这里）
+        "提现",
+        // 打赏：直播/内容平台的典型支出，文案往往只有「打赏 10 元」
+        "打赏"
     )
 
     /** 收入关键词 */
     private val INCOME_WORDS = listOf(
         "收款成功", "已收款", "到账", "退款成功", "已退款", "收入", "转入",
         // 微信/支付宝转账的高频说法
-        "收到转账", "成功收款", "你已成功收款", "向你转账", "已到账"
+        "收到转账", "成功收款", "你已成功收款", "向你转账", "已到账",
+        // 收红包（「收到红包」同时是营销过滤的豁免词，不会被误杀）
+        "收到红包", "抢到红包", "红包入账"
     )
 
     /** 排除词：命中就不记账（避免误记） */
@@ -83,13 +102,30 @@ object TransactionParser {
      * 第三优先：X.XX 元
      * 绝不单独抓裸的 12.34（会把订单号、比例、时间当金额）
      */
+    /**
+     * 阶段一的「金额引导词 + 权重」。
+     *
+     * 为什么不能只按出现位置取：通知里常有「订单金额 100 元，实付 90 元」，
+     * 按位置取会抓到 100。按权重取才抓得到 90。
+     *
+     * 权重相同时退化为按位置先后。
+     */
+    private val AMOUNT_LEADS: List<Pair<String, Int>> = listOf(
+        "实付" to 100, "实收" to 100,
+        "实际支付" to 90, "付款金额" to 90, "支付金额" to 90, "收款金额" to 90,
+        "转账金额" to 80, "退款金额" to 80, "到账金额" to 80, "扣款金额" to 80,
+        "本次消费" to 70, "消费金额" to 70, "收入金额" to 70, "支出金额" to 70,
+        "提现金额" to 70, "红包金额" to 70,
+        "共计" to 60, "合计" to 60,
+        "订单金额" to 50,
+    )
+
+    /** 阶段一之后的正则（靠货币符号或「元」推断） */
     private val AMOUNT_REGEXES = listOf(
-        // 阶段一：明确的"金额引导词"，命中即可信，不做余额过滤
-        Regex("""(?:实付|实收|实际支付|付款金额|支付金额|收款金额|本次消费|消费金额|共计|合计|到账金额|扣款金额)[^0-9￥¥]{0,10}[¥￥]?\s*([0-9,]+(?:\.[0-9]{1,2})?)"""),
         // 阶段二：带货币符号的
         Regex("""(?<![0-9.,])[¥￥]\s*([0-9,]+(?:\.[0-9]{1,2})?)"""),
-        // 阶段三：X.XX 元
-        Regex("""(?<![0-9.])([0-9,]+\.[0-9]{2})\s*元"""),
+        // 阶段三：X.X ~ X.XX 元（一位小数也要认，「消费 12.5 元」）
+        Regex("""(?<![0-9.])([0-9,]+\.[0-9]{1,2})\s*元"""),
         // 阶段四：整数元
         Regex("""(?<![0-9.])([0-9]{1,7})\s*元"""),
     )
@@ -124,7 +160,11 @@ object TransactionParser {
         val hitExclude = EXCLUDE_WORDS.firstOrNull { blob.contains(it) }
         if (hitExclude != null) { onFail("命中排除词「$hitExclude」"); return null }
 
-        val hasExpense = EXPENSE_WORDS.any { blob.contains(it) }
+        // 「向 XXX 转账」是明确的转出；「向你转账」是别人转给我，不算
+        val transferOut = Regex("""向.{1,20}?转账""").containsMatchIn(blob) &&
+                !blob.contains("向你转账")
+
+        val hasExpense = EXPENSE_WORDS.any { blob.contains(it) } || transferOut
         val hasIncome = INCOME_WORDS.any { blob.contains(it) }
         if (!hasExpense && !hasIncome) { onFail("没找到支付/收款关键词"); return null }
 
@@ -132,8 +172,20 @@ object TransactionParser {
         if (cents == null) { onFail("没找到金额"); return null }
         if (cents <= 0L || cents > 100_000_000L) { onFail("金额异常（$cents 分）"); return null }
 
-        // 同时命中时以收入为准（"退款成功" 通常也含"支付"）
-        val type = if (hasIncome) TxType.INCOME else TxType.EXPENSE
+        // 类型判定。三个特判要在「收入优先」之前，否则方向会记反：
+        //   提现  —— 「提现成功，已转入银行卡」含「转入」，但钱是出去的
+        //   充值  —— 「充值成功，已到账 50 元」含「到账」，但钱是出去的
+        //   转出  —— 「向 XX 转账」不带「收到」
+        // 其余同时命中时以收入为准（"退款成功" 通常也含"支付"）
+        val type = when {
+            blob.contains("提现") &&
+                !listOf("收到转账", "向你转账").any { blob.contains(it) } -> TxType.EXPENSE
+
+            listOf("充值成功", "已充值").any { blob.contains(it) } -> TxType.EXPENSE
+
+            hasIncome -> TxType.INCOME
+            else -> TxType.EXPENSE
+        }
 
         // 广告通知过滤：像广告、又没有成交确认 → 不记账
         // 收入侧只过滤「红包奖励」这类纯营销文案，其余不动（红包入账是真钱）
@@ -147,30 +199,75 @@ object TransactionParser {
             ) { onFail("疑似营销奖励文案"); return null }
         }
 
-        // 商户名：取标题，去掉 App 名后缀
-        val merchant = title
+        // 商户名：先取标题（去掉 App 名和前后标点）
+        val fromTitle = title
             .replace(Regex("^【[^】]*】"), "")
             .replace(app, "")
             .replace(Regex("^[\\s:：\\-—|]+"), "")
             .replace(Regex("[\\s:：\\-—|]+$"), "")
             .take(40)
-            .ifBlank { app }
+
+        // 标题给不出商户（空 / 只有 App 名）时，回到正文里找
+        val merchant = if (fromTitle.isBlank() || fromTitle == app) {
+            extractMerchantFromBody(blob) ?: app
+        } else fromTitle
 
         return Parsed(cents, type, app, merchant, blob)
     }
 
+    /** 正文里的商户线索：「在 X 消费」「向 X 付款」「X 收款」 */
+    private val MERCHANT_PATTERNS = listOf(
+        Regex("""在([^，,。；;\s]{2,20}?)(?:消费|支付|付款|买单)"""),
+        Regex("""向([^，,。；;\s]{2,20}?)(?:付款|转账)"""),
+        Regex("""([^，,。；;\s0-9]{2,20}?)收款"""),
+    )
+
+    /**
+     * 从正文里猜商户名。
+     * 只用来兜底（标题没给出商户时），宁缺毋滥 —— 猜不出就返回 null。
+     */
+    fun extractMerchantFromBody(text: String): String? {
+        for (re in MERCHANT_PATTERNS) {
+            val m = re.find(text) ?: continue
+            val name = m.groupValues[1].trim()
+            // 排掉「你」「我」这类代词和纯数字
+            if (name.length < 2) continue
+            if (name in listOf("你", "我", "他", "她", "它", "本店", "该店")) continue
+            if (name.all { it.isDigit() }) continue
+            return name
+        }
+        return null
+    }
+
     /** 从文本里抓金额，返回「分」 */
     fun extractCents(text: String): Long? {
-        // 阶段一：语义引导词命中的数字最可信，直接用
-        for (m in AMOUNT_REGEXES[0].findAll(text)) {
-            val d = m.groupValues[1].replace(",", "").toDoubleOrNull() ?: continue
-            if (d > 0.0) return Math.round(d * 100)
+        // 阶段一：命中金额引导词的数字最可信。按「权重降序、位置升序」取第一个
+        var bestPrio = -1
+        var bestPos = Int.MAX_VALUE
+        var bestCents: Long? = null
+
+        for ((word, prio) in AMOUNT_LEADS) {
+            val re = Regex(
+                Regex.escape(word) + """[^0-9￥¥]{0,10}[¥￥]?\s*([0-9,]+(?:\.[0-9]{1,2})?)"""
+            )
+            for (m in re.findAll(text)) {
+                val d = m.groupValues[1].replace(",", "").toDoubleOrNull() ?: continue
+                if (d <= 0.0) continue
+                val cents = Math.round(d * 100)
+                val better = prio > bestPrio || (prio == bestPrio && m.range.first < bestPos)
+                if (better) {
+                    bestPrio = prio
+                    bestPos = m.range.first
+                    bestCents = cents
+                }
+            }
         }
+        if (bestCents != null) return bestCents
 
         // 阶段二~四：靠符号或单位推断，必须跳过余额/可用额度这类
         val skipWords = listOf("余额", "可用", "额度", "剩余", "总计有")
-        for (i in 1 until AMOUNT_REGEXES.size) {
-            for (m in AMOUNT_REGEXES[i].findAll(text)) {
+        for (regex in AMOUNT_REGEXES) {
+            for (m in regex.findAll(text)) {
                 val before = text.substring(maxOf(0, m.range.first - 12), m.range.first)
                 if (skipWords.any { before.contains(it) }) continue
                 val d = m.groupValues[1].replace(",", "").toDoubleOrNull() ?: continue
@@ -212,7 +309,7 @@ object TransactionParser {
         }
 
         // 转账类优先判定，避免"转账给你吃饭"这种被误归餐饮
-        if (listOf("转账", "转给你", "向你转账", "已收款", "收款成功").any { s.contains(it) } &&
+        if (listOf("转账", "转给你", "向你转账", "已收款", "收款成功", "还款", "提现").any { s.contains(it) } &&
             !listOf("美团", "饿了么", "闪送", "大众点评").any { s.contains(it) }) {
             return "转账"
         }

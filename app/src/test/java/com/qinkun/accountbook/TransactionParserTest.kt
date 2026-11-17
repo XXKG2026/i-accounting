@@ -389,4 +389,229 @@ class TransactionParserTest {
         val r = com.qinkun.accountbook.service.CategoryRules.classifyExpense("小馆")
         assertNull(r)
     }
+
+    // ============================================================
+    //  v2.4 抓取能力完善（见 完善意见.md）
+    // ============================================================
+
+    /** 只关心分类时用这个 */
+    private fun cat(pkg: String, title: String, vararg texts: String): String? {
+        val r = TransactionParser.parse(pkg, title, texts.toList()) ?: return null
+        return TransactionParser.guessCategory(r.sourceApp, r.merchant, r.rawText, r.type)
+    }
+
+    // ---------- 1. 转账支出（P0）----------
+    @Test
+    fun transfer_out_is_expense() {
+        val r = p("com.eg.android.AlipayGphone", "支付宝", "转账成功 ¥100.00")
+        assertNotNull(r); r!!
+        assertEquals(10000L, r.amountCents)
+        assertEquals(TxType.EXPENSE, r.type)
+        assertEquals("转账", TransactionParser.guessCategory(r.sourceApp, r.merchant, r.rawText, r.type))
+    }
+
+    @Test
+    fun transfer_to_person_is_expense() {
+        val r = p("com.tencent.mm", "微信", "你向李四转账 88.88 元")
+        assertNotNull(r); r!!
+        assertEquals(8888L, r.amountCents)
+        assertEquals(TxType.EXPENSE, r.type)
+        assertEquals("转账", TransactionParser.guessCategory(r.sourceApp, r.merchant, r.rawText, r.type))
+    }
+
+    @Test
+    fun transfer_in_still_income() {
+        val r = p("com.tencent.mm", "微信", "收到转账 200 元")
+        assertNotNull(r); r!!
+        assertEquals(20000L, r.amountCents)
+        assertEquals(TxType.INCOME, r.type)
+    }
+
+    @Test
+    fun transfer_to_me_still_income() {
+        val r = p("com.tencent.mm", "微信", "张三向你转账 50 元")
+        assertNotNull(r); r!!
+        assertEquals(5000L, r.amountCents)
+        assertEquals(TxType.INCOME, r.type)
+    }
+
+    // ---------- 2. 红包收入（P0）----------
+    @Test
+    fun red_packet_received_is_income() {
+        val r = p("com.tencent.mm", "微信", "收到红包 ¥5.20")
+        assertNotNull(r); r!!
+        assertEquals(520L, r.amountCents)
+        assertEquals(TxType.INCOME, r.type)
+        assertEquals("红包", TransactionParser.guessCategory(r.sourceApp, r.merchant, r.rawText, r.type))
+    }
+
+    @Test
+    fun red_packet_grabbed_is_income() {
+        val r = p("com.tencent.mm", "微信", "抢到红包 8.88 元")
+        assertNotNull(r); r!!
+        assertEquals(888L, r.amountCents)
+        assertEquals(TxType.INCOME, r.type)
+        assertEquals("红包", TransactionParser.guessCategory(r.sourceApp, r.merchant, r.rawText, r.type))
+    }
+
+    @Test
+    fun red_packet_marketing_is_dropped() {
+        val r = p("com.eg.android.AlipayGphone", "支付宝", "恭喜获得 5 元红包奖励，点击领取")
+        assertNull(r)
+    }
+
+    // ---------- 3. 提现方向（P1）----------
+    @Test
+    fun withdraw_is_expense_not_income() {
+        val r = p("com.eg.android.AlipayGphone", "支付宝", "提现成功，已转入银行卡 500.00 元")
+        assertNotNull(r); r!!
+        assertEquals(50000L, r.amountCents)
+        assertEquals(TxType.EXPENSE, r.type)
+        assertEquals("转账", TransactionParser.guessCategory(r.sourceApp, r.merchant, r.rawText, r.type))
+    }
+
+    @Test
+    fun withdraw_plain_is_expense() {
+        val r = p("com.eg.android.AlipayGphone", "支付宝", "提现 ¥100 到银行卡")
+        assertNotNull(r); r!!
+        assertEquals(10000L, r.amountCents)
+        assertEquals(TxType.EXPENSE, r.type)
+    }
+
+    // ---------- 4. 一位小数（P1）----------
+    @Test
+    fun one_decimal_yuan() {
+        assertEquals(1250L, TransactionParser.extractCents("消费 12.5 元"))
+    }
+
+    @Test
+    fun two_decimal_yuan_regression() {
+        assertEquals(850L, TransactionParser.extractCents("支付 8.50 元"))
+    }
+
+    @Test
+    fun one_cent_yuan() {
+        assertEquals(10L, TransactionParser.extractCents("消费 0.1 元"))
+    }
+
+    // ---------- 5. 金额引导词优先级（P1）----------
+    @Test
+    fun paid_amount_beats_order_amount() {
+        assertEquals(9000L, TransactionParser.extractCents("订单金额 100 元，实付 90 元"))
+    }
+
+    @Test
+    fun paid_amount_beats_order_amount_reversed() {
+        assertEquals(9000L, TransactionParser.extractCents("实付 ¥90.00，订单金额 ¥100.00"))
+    }
+
+    @Test
+    fun refund_amount_lead() {
+        assertEquals(5000L, TransactionParser.extractCents("退款金额 50.00 元"))
+    }
+
+    @Test
+    fun transfer_amount_lead() {
+        assertEquals(20000L, TransactionParser.extractCents("转账金额 200 元"))
+    }
+
+    // ---------- 6. 新增 App（P1）----------
+    @Test
+    fun unionpay_expense() {
+        val r = p("com.unionpay", "云闪付", "云闪付：消费 ¥25.80")
+        assertNotNull(r); r!!
+        assertEquals(2580L, r.amountCents)
+        assertEquals(TxType.EXPENSE, r.type)
+        assertEquals("云闪付", r.sourceApp)
+    }
+
+    @Test
+    fun eleme_expense_catering() {
+        val r = p("me.ele", "饿了么", "订单支付 32.00 元")
+        assertNotNull(r); r!!
+        assertEquals(3200L, r.amountCents)
+        assertEquals("饿了么", r.sourceApp)
+        assertEquals("餐饮", TransactionParser.guessCategory(r.sourceApp, r.merchant, r.rawText, r.type))
+    }
+
+    @Test
+    fun kuaishou_expense_entertainment() {
+        val r = p("com.smile.gifmaker", "快手", "打赏 10 元")
+        assertNotNull(r); r!!
+        assertEquals(1000L, r.amountCents)
+        assertEquals("快手", r.sourceApp)
+        assertEquals("娱乐", TransactionParser.guessCategory(r.sourceApp, r.merchant, r.rawText, r.type))
+    }
+
+    // ---------- 7. 充值（P2）----------
+    @Test
+    fun phone_topup_is_expense_communicate() {
+        val r = p("com.eg.android.AlipayGphone", "支付宝", "话费充值成功 50 元")
+        assertNotNull(r); r!!
+        assertEquals(5000L, r.amountCents)
+        assertEquals(TxType.EXPENSE, r.type)
+        assertEquals("通讯", TransactionParser.guessCategory(r.sourceApp, r.merchant, r.rawText, r.type))
+    }
+
+    @Test
+    fun topup_with_arrival_is_expense() {
+        val r = p("com.eg.android.AlipayGphone", "支付宝", "充值成功，已到账 50 元")
+        assertNotNull(r); r!!
+        assertEquals(5000L, r.amountCents)
+        assertEquals(TxType.EXPENSE, r.type)
+    }
+
+    // ---------- 8. 还款（P2）----------
+    @Test
+    fun credit_card_repay_is_transfer() {
+        val r = p("com.eg.android.AlipayGphone", "支付宝", "信用卡还款成功 ¥1000")
+        assertNotNull(r); r!!
+        assertEquals(100000L, r.amountCents)
+        assertEquals(TxType.EXPENSE, r.type)
+        assertEquals("转账", TransactionParser.guessCategory(r.sourceApp, r.merchant, r.rawText, r.type))
+    }
+
+    @Test
+    fun repay_reminder_is_dropped() {
+        val r = p("com.eg.android.AlipayGphone", "支付宝", "信用卡还款提醒：本期账单 1000 元")
+        assertNull(r)
+    }
+
+    // ---------- 9. 商户名 fallback（P2）----------
+    @Test
+    fun merchant_from_body_when_title_is_app() {
+        val r = p("com.eg.android.AlipayGphone", "支付宝", "在老王面馆消费 25.00 元，支付成功")
+        assertNotNull(r); r!!
+        assertEquals(2500L, r.amountCents)
+        assertEquals("老王面馆", r.merchant)
+    }
+
+    @Test
+    fun merchant_from_title_regression() {
+        val r = p("com.sankuai.meituan", "美团外卖", "支付成功，共¥35.00")
+        assertNotNull(r); r!!
+        assertEquals("外卖", r.merchant)
+    }
+
+    // ---------- 回归：两条广告/真交易判定 ----------
+    @Test
+    fun coupon_real_deal_still_recorded() {
+        val r = p("com.eg.android.AlipayGphone", "支付宝", "使用优惠券后实付 20.00 元，支付成功")
+        assertNotNull(r); r!!
+        assertEquals(2000L, r.amountCents)
+    }
+
+    @Test
+    fun ad_with_tiny_amount_still_dropped() {
+        val r = p("com.eg.android.AlipayGphone", "支付宝", "你有一笔0.08元的支出，领1元生活缴费红包")
+        assertNull(r)
+    }
+
+    // ---------- 回归：余额不被当金额 ----------
+    @Test
+    fun balance_still_skipped_after_changes() {
+        val r = p("com.eg.android.AlipayGphone", "支付宝", "余额 ¥500.00，本次实付 ¥20.00")
+        assertNotNull(r); r!!
+        assertEquals(2000L, r.amountCents)
+    }
 }
