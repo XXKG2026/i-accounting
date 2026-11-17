@@ -4,6 +4,7 @@ import android.app.Notification
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
+import com.qinkun.accountbook.data.CaptureLog
 import com.qinkun.accountbook.data.Repo
 import com.qinkun.accountbook.data.Transaction
 import com.qinkun.accountbook.util.PiiMasker
@@ -24,7 +25,7 @@ class NotifyListener : NotificationListenerService() {
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         val pkg = sbn.packageName ?: return
-        if (!TransactionParser.APP_NAMES.containsKey(pkg)) return
+        val appName = TransactionParser.APP_NAMES[pkg] ?: return
 
         val n: Notification = sbn.notification ?: return
         val e = n.extras ?: return
@@ -40,16 +41,36 @@ class NotifyListener : NotificationListenerService() {
 
         if (texts.isEmpty() && title.isBlank()) return
 
-        val parsed = TransactionParser.parse(pkg, title, texts) ?: return
+        var failReason: String? = null
+        val parsed = TransactionParser.parse(pkg, title, texts) { failReason = it }
         val at = if (sbn.postTime > 0) sbn.postTime else System.currentTimeMillis()
+
+        // 日志用的原文（脱敏后），失败时也要留下，方便事后排查
+        val logTitle = PiiMasker.mask(title)
+        val logText = PiiMasker.mask(texts.joinToString(" / "))
 
         scope.launch {
             try {
+                if (parsed == null) {
+                    Log.d(TAG, "未记账（${failReason ?: "未知"}）: ${title.take(40)}")
+                    repo.addCaptureLog(
+                        CaptureLog(
+                            at = at, sourceApp = appName,
+                            title = logTitle, text = logText,
+                            success = false, reason = failReason ?: "未识别",
+                        )
+                    )
+                    return@launch
+                }
+
+                val category = TransactionParser.guessCategory(
+                    parsed.sourceApp, parsed.merchant, parsed.rawText, parsed.type
+                )
                 val id = repo.addIfNew(
                     Transaction(
                         amountCents = parsed.amountCents,
                         type = parsed.type,
-                        category = TransactionParser.guessCategory(parsed.sourceApp, parsed.merchant, parsed.rawText, parsed.type),
+                        category = category,
                         merchant = PiiMasker.mask(parsed.merchant),
                         sourceApp = parsed.sourceApp,
                         note = "",
@@ -57,13 +78,44 @@ class NotifyListener : NotificationListenerService() {
                         rawText = PiiMasker.mask(parsed.rawText),
                     )
                 )
-                if (id < 0) {
+
+                val isDup = id < 0
+                val yuan = String.format("%.2f", parsed.amountCents / 100.0)
+                val dir = if (parsed.type.name == "EXPENSE") "支出" else "收入"
+                repo.addCaptureLog(
+                    CaptureLog(
+                        at = at, sourceApp = appName,
+                        title = logTitle, text = logText,
+                        success = !isDup,
+                        reason = if (isDup) "重复通知，已跳过（5 分钟内同文本）"
+                                 else "$dir ¥$yuan · $category",
+                        amountCents = if (isDup) 0 else parsed.amountCents,
+                    )
+                )
+
+                if (isDup) {
                     Log.d(TAG, "重复通知，跳过: ${parsed.rawText.take(40)}")
                 } else {
-                    Log.i(TAG, "已记账: ${parsed.sourceApp} ${parsed.type} ${parsed.amountCents / 100.0} ${parsed.merchant}")
+                    Log.i(TAG, "已记账: ${parsed.sourceApp} $dir $yuan ${parsed.merchant} → $category")
                 }
             } catch (ex: Exception) {
                 Log.e(TAG, "入库失败", ex)
+                runCatching {
+                    repo.addCaptureLog(
+                        CaptureLog(
+                            at = at, sourceApp = appName,
+                            title = logTitle, text = logText,
+                            success = false, reason = "入库失败：${ex.javaClass.simpleName}",
+                        )
+                    )
+                }
+            }
+            // 清理 7 天前的日志 —— 节流：最多每 6 小时一次。
+            // 每条通知都跑 DELETE 会造成写放大和数据库锁竞争。
+            val now = System.currentTimeMillis()
+            if (now - lastPruneAt > 6L * 60 * 60 * 1000) {
+                lastPruneAt = now
+                runCatching { repo.pruneCaptureLogs(7) }
             }
         }
     }
@@ -76,5 +128,8 @@ class NotifyListener : NotificationListenerService() {
         Log.w(TAG, "通知监听已断开")
     }
 
-    companion object { const val TAG = "NotifyListener" }
+    companion object {
+        const val TAG = "NotifyListener"
+        @Volatile private var lastPruneAt = 0L
+    }
 }

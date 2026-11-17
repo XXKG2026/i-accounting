@@ -54,6 +54,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         .flatMapLatest { (f, t) -> repo.byCategory(TxType.INCOME, f, t) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    // ---- 补录提示（常用商户 / 高频分类）----
+    private val _merchants = MutableStateFlow<List<String>>(emptyList())
+    val frequentMerchants: StateFlow<List<String>> = _merchants.asStateFlow()
+
+    private val _recentCats = MutableStateFlow<List<String>>(emptyList())
+    val recentCategories: StateFlow<List<String>> = _recentCats.asStateFlow()
+
+    /** 打开「记一笔」时调用：拉最近 30 天的高频数据，让选择更快 */
+    fun refreshAddHints(type: TxType) {
+        viewModelScope.launch {
+            _merchants.value = runCatching { repo.frequentMerchants(12) }.getOrDefault(emptyList())
+            val since = System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000
+            _recentCats.value = runCatching { repo.recentCategories(type, since) }.getOrDefault(emptyList())
+        }
+    }
+
     // ---- 交互 ----
     fun setPeriod(p: Period) { _ps.value = PeriodState(p, 0) }
 

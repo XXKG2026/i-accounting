@@ -47,6 +47,30 @@ interface TransactionDao {
 
     @Query("DELETE FROM transactions WHERE id = :id")
     suspend fun deleteById(id: Long)
+
+    /**
+     * 常用商户 —— 手动补录时给个快捷列表。
+     * 按"记过几次"排序，同次数时取最近用过的。
+     */
+    @Query(
+        """SELECT merchant FROM transactions
+           WHERE merchant != '' AND merchant != '手动记账'
+           GROUP BY merchant
+           ORDER BY COUNT(*) DESC, MAX(occurredAt) DESC
+           LIMIT :limit"""
+    )
+    suspend fun frequentMerchants(limit: Int = 12): List<String>
+
+    /**
+     * 最近用过的分类（按笔数降序），用来把高频分类排到选择列表前面。
+     */
+    @Query(
+        """SELECT category FROM transactions
+           WHERE type = :type AND occurredAt >= :since
+           GROUP BY category
+           ORDER BY COUNT(*) DESC"""
+    )
+    suspend fun recentCategories(type: TxType, since: Long): List<String>
 }
 
 data class CategorySum(val category: String, val total: Long)

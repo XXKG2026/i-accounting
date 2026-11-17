@@ -21,8 +21,19 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationManagerCompat
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import com.qinkun.accountbook.AppContextHolder
+import com.qinkun.accountbook.data.CaptureLog
+import com.qinkun.accountbook.data.Repo
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import com.qinkun.accountbook.service.KeepAlive
 import com.qinkun.accountbook.service.TransactionParser
 
@@ -34,6 +45,9 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     var testResult by remember { mutableStateOf<String?>(null) }
     var testPkg by remember { mutableStateOf("com.sankuai.meituan") }
     var keepAlive by remember { mutableStateOf(KeepAlive.isEnabled(ctx)) }
+    var showLogs by remember { mutableStateOf(false) }
+    var logs by remember { mutableStateOf<List<CaptureLog>>(emptyList()) }
+    val scope = rememberCoroutineScope()
 
     // Android 13+ 显示常驻通知需要用户授权
     val notiPermLauncher = rememberLauncherForActivityResult(
@@ -134,6 +148,36 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
 
         Spacer(Modifier.height(14.dp))
 
+        // ---- 抓取记录 ----
+        Card(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = AppColor.surface)
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text("抓取记录", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = AppColor.ink)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "最近 7 天收到的通知和识别结果。漏记时先看这里：是没收到，还是收到了没认出。",
+                    fontSize = 11.sp, color = AppColor.inkSoft
+                )
+                Spacer(Modifier.height(10.dp))
+                Button(
+                    onClick = {
+                        scope.launch {
+                            logs = runCatching {
+                                Repo(ctx).captureLogs(100).first()
+                            }.getOrDefault(emptyList())
+                            showLogs = true
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = AppColor.accent)
+                ) { Text("查看记录", fontSize = 13.sp) }
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+
         // ---- 支持的 App ----
         Card(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp),
@@ -217,10 +261,112 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
 
         Spacer(Modifier.height(24.dp))
     }
+
+    if (showLogs) {
+        CaptureLogDialog(
+            logs = logs,
+            onDismiss = { showLogs = false },
+            onClear = {
+                scope.launch {
+                    runCatching { Repo(ctx).clearCaptureLogs() }
+                    logs = emptyList()
+                }
+            }
+        )
+    }
 }
 
 private fun isListenerEnabled(): Boolean {
     // 在 Compose 里拿 applicationContext 不方便，用静态引用兜底
     val ctx = AppContextHolder.ctx ?: return false
     return NotificationManagerCompat.getEnabledListenerPackages(ctx).contains(ctx.packageName)
+}
+
+/**
+ * 抓取记录弹窗。
+ * 每条显示：时间 / 来源 / 结果 / 原文（脱敏后）。
+ * 成功是绿色，失败是灰色 —— 一眼能扫出"哪些没记上、为什么"。
+ */
+@Composable
+private fun CaptureLogDialog(
+    logs: List<CaptureLog>,
+    onDismiss: () -> Unit,
+    onClear: () -> Unit,
+) {
+    val fmt = remember { SimpleDateFormat("MM-dd HH:mm", Locale.CHINA) }
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            Modifier.fillMaxWidth(0.94f).fillMaxHeight(0.82f),
+            shape = RoundedCornerShape(14.dp),
+            color = AppColor.paper
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("抓取记录", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = AppColor.ink)
+                    Text("${logs.count { it.success }} 成功 / ${logs.count { !it.success }} 未记", fontSize = 11.sp, color = AppColor.inkSoft)
+                }
+                Spacer(Modifier.height(10.dp))
+
+                if (logs.isEmpty()) {
+                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Text("还没有记录\n收到通知后会出现在这里", fontSize = 13.sp,
+                            color = AppColor.inkSoft, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    }
+                } else {
+                    LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(logs, key = { it.id }) { log ->
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = AppColor.surface,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(Modifier.padding(10.dp)) {
+                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                        Text(
+                                            "${fmt.format(Date(log.at))}  ${log.sourceApp}",
+                                            fontSize = 11.sp, color = AppColor.inkSoft
+                                        )
+                                        Text(
+                                            if (log.success) "已记账" else "未记账",
+                                            fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+                                            color = if (log.success) AppColor.income else AppColor.inkSoft
+                                        )
+                                    }
+                                    Spacer(Modifier.height(3.dp))
+                                    Text(
+                                        log.reason,
+                                        fontSize = 12.sp,
+                                        color = if (log.success) AppColor.ink else AppColor.expense.copy(alpha = 0.85f)
+                                    )
+                                    if (log.title.isNotBlank() || log.text.isNotBlank()) {
+                                        Spacer(Modifier.height(3.dp))
+                                        Text(
+                                            (log.title + " " + log.text).trim().take(120),
+                                            fontSize = 10.sp, color = AppColor.inkSoft, maxLines = 2
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(10.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onClear) {
+                        Text("清空记录", fontSize = 12.sp, color = AppColor.inkSoft)
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(onClick = onDismiss) { Text("关闭", fontSize = 13.sp) }
+                }
+            }
+        }
+    }
 }

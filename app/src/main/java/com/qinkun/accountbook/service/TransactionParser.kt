@@ -102,21 +102,35 @@ object TransactionParser {
         val rawText: String,
     )
 
-    /** 主入口：返回 null 表示这条通知不该记账 */
-    fun parse(pkg: String, title: String, texts: List<String>): Parsed? {
-        val app = APP_NAMES[pkg] ?: return null
+    /**
+     * 主入口：返回 null 表示这条通知不该记账。
+     *
+     * [onFail] 会带上「为什么放弃」的原因，给「抓取记录」页用 ——
+     * 以前漏记是黑盒，现在能一眼看出是没收到、还是收到了没认出、还是被判定成广告。
+     */
+    fun parse(
+        pkg: String,
+        title: String,
+        texts: List<String>,
+        onFail: (String) -> Unit = {},
+    ): Parsed? {
+        val app = APP_NAMES[pkg]
+        if (app == null) { onFail("不在支持的 App 名单里"); return null }
+
         val blob = (listOf(title) + texts).joinToString(" ").replace("\u00A0", " ").trim()
-        if (blob.isBlank()) return null
+        if (blob.isBlank()) { onFail("通知内容为空"); return null }
 
         // 排除
-        if (EXCLUDE_WORDS.any { blob.contains(it) }) return null
+        val hitExclude = EXCLUDE_WORDS.firstOrNull { blob.contains(it) }
+        if (hitExclude != null) { onFail("命中排除词「$hitExclude」"); return null }
 
         val hasExpense = EXPENSE_WORDS.any { blob.contains(it) }
         val hasIncome = INCOME_WORDS.any { blob.contains(it) }
-        if (!hasExpense && !hasIncome) return null
+        if (!hasExpense && !hasIncome) { onFail("没找到支付/收款关键词"); return null }
 
-        val cents = extractCents(blob) ?: return null
-        if (cents <= 0L || cents > 100_000_000L) return null   // 超过 100 万视为解析错误
+        val cents = extractCents(blob)
+        if (cents == null) { onFail("没找到金额"); return null }
+        if (cents <= 0L || cents > 100_000_000L) { onFail("金额异常（$cents 分）"); return null }
 
         // 同时命中时以收入为准（"退款成功" 通常也含"支付"）
         val type = if (hasIncome) TxType.INCOME else TxType.EXPENSE
@@ -124,13 +138,13 @@ object TransactionParser {
         // 广告通知过滤：像广告、又没有成交确认 → 不记账
         // 收入侧只过滤「红包奖励」这类纯营销文案，其余不动（红包入账是真钱）
         if (type == TxType.EXPENSE) {
-            val looksLikeAd = MARKETING_MARKERS.any { blob.contains(it) }
+            val adWord = MARKETING_MARKERS.firstOrNull { blob.contains(it) }
             val confirmed = DEAL_CONFIRM.any { blob.contains(it) }
-            if (looksLikeAd && !confirmed) return null
+            if (adWord != null && !confirmed) { onFail("疑似广告（含「$adWord」且无成交确认词）"); return null }
         } else {
             if (listOf("红包奖励", "奖励金", "返利券", "优惠券").any { blob.contains(it) } &&
                 !listOf("红包到账", "红包收入", "转入", "收到红包").any { blob.contains(it) }
-            ) return null
+            ) { onFail("疑似营销奖励文案"); return null }
         }
 
         // 商户名：取标题，去掉 App 名后缀

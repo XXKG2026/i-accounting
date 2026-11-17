@@ -6,8 +6,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.PieChart
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
@@ -48,7 +48,7 @@ fun AppRoot(vm: MainViewModel) {
     val tabs = listOf(
         Tab("首页", Icons.Filled.Home),
         Tab("统计", Icons.Filled.PieChart),
-        Tab("明细", Icons.Filled.List),
+        Tab("明细", Icons.AutoMirrored.Filled.List),
         Tab("设置", Icons.Filled.Settings),
     )
     var idx by remember { mutableIntStateOf(0) }

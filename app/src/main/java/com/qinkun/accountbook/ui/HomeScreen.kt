@@ -2,6 +2,9 @@ package com.qinkun.accountbook.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -13,6 +16,13 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalContext
+import android.content.Intent
+import android.provider.Settings
+import androidx.core.app.NotificationManagerCompat
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -32,8 +42,50 @@ fun HomeScreen(vm: MainViewModel, modifier: Modifier = Modifier) {
     var selectedTx by remember { mutableStateOf<Transaction?>(null) }
     var deleteTarget by remember { mutableStateOf<Transaction?>(null) }
 
+    val ctx = LocalContext.current
+    // 自动记账是否还能工作：权限被撤、或服务断开时提醒，避免"静默失效"。
+    // 只在回到前台时查一次 —— 定时轮询会在应用不可见时继续跑，白耗电。
+    var autoOk by remember { mutableStateOf(true) }
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
+            autoOk = runCatching {
+                NotificationManagerCompat.getEnabledListenerPackages(ctx).contains(ctx.packageName)
+            }.getOrDefault(true)
+        }
+    }
+
     Box(modifier.fillMaxSize().background(AppColor.paper)) {
         Column(Modifier.fillMaxSize()) {
+            // ---- 失效提醒 ----
+            if (!autoOk) {
+                Surface(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    color = AppColor.expense.copy(alpha = 0.12f)
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("自动记账已失效", fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold, color = AppColor.expense)
+                            Text("通知读取权限被关了，这段时间的账没记上", fontSize = 11.sp,
+                                color = AppColor.inkSoft)
+                        }
+                        TextButton(onClick = {
+                            runCatching {
+                                ctx.startActivity(
+                                    Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                )
+                            }
+                        }) { Text("去修复", fontSize = 12.sp, color = AppColor.expense) }
+                    }
+                }
+            }
+
             // 周期切换
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
@@ -140,7 +192,12 @@ fun HomeScreen(vm: MainViewModel, modifier: Modifier = Modifier) {
     }
 
     if (showAdd) {
+        val merchants by vm.frequentMerchants.collectAsState()
+        val recentCats by vm.recentCategories.collectAsState()
+        LaunchedEffect(Unit) { vm.refreshAddHints(TxType.EXPENSE) }
         AddDialog(
+            frequentMerchants = merchants,
+            recentCategories = recentCats,
             onDismiss = { showAdd = false },
             onConfirm = { cents, type, cat, merchant, note ->
                 vm.addManual(cents, type, cat, merchant, note)
@@ -165,42 +222,83 @@ private fun SummaryCard(label: String, cents: Long, color: androidx.compose.ui.g
 }
 
 @Composable
-private fun AddDialog(onDismiss: () -> Unit, onConfirm: (Long, TxType, String, String, String) -> Unit) {
+private fun AddDialog(
+    frequentMerchants: List<String> = emptyList(),
+    recentCategories: List<String> = emptyList(),
+    onDismiss: () -> Unit,
+    onConfirm: (Long, TxType, String, String, String) -> Unit,
+) {
     var amount by remember { mutableStateOf("") }
     var isExpense by remember { mutableStateOf(true) }
-    var category by remember { mutableStateOf("餐饮") }
+    var category by remember { mutableStateOf("") }
     var merchant by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
-    val cats = if (isExpense) EXPENSE_CATEGORIES else INCOME_CATEGORIES
 
-    LaunchedEffect(isExpense) { if (category !in cats) category = cats.first() }
+    // 高频分类排在前面，其余保持默认顺序 —— 少翻一半
+    val cats = remember(isExpense, recentCategories) {
+        val base = if (isExpense) EXPENSE_CATEGORIES else INCOME_CATEGORIES
+        val front = recentCategories.filter { it in base }
+        front + base.filter { it !in front }
+    }
+    if (category.isBlank() || category !in cats) category = cats.firstOrNull() ?: "其他"
+
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        // 等一帧再请求焦点：Dialog 刚创建时组件还没 attach，
+        // 立刻 requestFocus 会抛异常或静默失效。
+        kotlinx.coroutines.delay(180)
+        runCatching { focus.requestFocus() }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("记一笔") },
+        title = { Text("记一笔", fontSize = 17.sp, fontWeight = FontWeight.SemiBold) },
         text = {
-            Column {
-                Row {
-                    FilterChip(isExpense, { isExpense = true }, { Text("支出") })
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    FilterChip(isExpense, { isExpense = true }, { Text("支出", fontSize = 12.sp) })
                     Spacer(Modifier.width(8.dp))
-                    FilterChip(!isExpense, { isExpense = false }, { Text("收入") })
+                    FilterChip(!isExpense, { isExpense = false }, { Text("收入", fontSize = 12.sp) })
                 }
                 Spacer(Modifier.height(8.dp))
+
                 OutlinedTextField(
-                    value = amount, onValueChange = { amount = it },
+                    value = amount,
+                    onValueChange = { v -> amount = v.filter { it.isDigit() || it == '.' }.take(10) },
                     label = { Text("金额（元）") },
                     keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
                         keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal
                     ),
-                    modifier = Modifier.fillMaxWidth(), singleLine = true
+                    modifier = Modifier.fillMaxWidth().focusRequester(focus),
+                    singleLine = true
                 )
-                Spacer(Modifier.height(8.dp))
+
+                // 常用商户：点一下直接填，不用打字
+                if (frequentMerchants.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text("常用", fontSize = 11.sp, color = AppColor.inkSoft)
+                    Spacer(Modifier.height(4.dp))
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        frequentMerchants.take(8).chunked(4).forEach { row ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                row.forEach { m ->
+                                    AssistChip(
+                                        onClick = { merchant = m },
+                                        label = { Text(m.take(8), fontSize = 11.sp) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
                 OutlinedTextField(
                     value = merchant, onValueChange = { merchant = it },
                     label = { Text("商户（可空）") },
                     modifier = Modifier.fillMaxWidth(), singleLine = true
                 )
                 Spacer(Modifier.height(10.dp))
+
                 Text("分类", fontSize = 12.sp, color = AppColor.inkSoft)
                 Spacer(Modifier.height(6.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -224,9 +322,13 @@ private fun AddDialog(onDismiss: () -> Unit, onConfirm: (Long, TxType, String, S
             TextButton(onClick = {
                 val d = amount.toDoubleOrNull()
                 if (d != null && d > 0) {
-                    onConfirm(Math.round(d * 100), if (isExpense) TxType.EXPENSE else TxType.INCOME, category, merchant, note)
+                    onConfirm(
+                        Math.round(d * 100),
+                        if (isExpense) TxType.EXPENSE else TxType.INCOME,
+                        category, merchant, note
+                    )
                 }
-            }) { Text("保存") }
+            }) { Text("保存", fontWeight = FontWeight.SemiBold) }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )

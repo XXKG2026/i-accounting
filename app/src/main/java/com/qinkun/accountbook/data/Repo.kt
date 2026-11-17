@@ -9,7 +9,9 @@ enum class Period(val label: String) {
 }
 
 class Repo(context: Context) {
-    private val dao = AppDatabase.get(context).txDao()
+    private val db = AppDatabase.get(context)
+    private val dao = db.txDao()
+    private val logDao = db.logDao()
 
     fun all(): Flow<List<Transaction>> = dao.all()
     fun between(from: Long, to: Long): Flow<List<Transaction>> = dao.between(from, to)
@@ -22,6 +24,18 @@ class Repo(context: Context) {
     suspend fun remove(tx: Transaction) = dao.delete(tx)
     suspend fun update(tx: Transaction) = dao.update(tx)
     suspend fun findDuplicate(raw: String, since: Long) = dao.findDuplicate(raw, since)
+
+    // ---- 补录辅助 ----
+    suspend fun frequentMerchants(limit: Int = 12): List<String> = dao.frequentMerchants(limit)
+    suspend fun recentCategories(type: TxType, since: Long): List<String> = dao.recentCategories(type, since)
+
+    // ---- 抓取日志 ----
+    fun captureLogs(limit: Int = 100) = logDao.recent(limit)
+    suspend fun addCaptureLog(log: CaptureLog) = logDao.insert(log)
+    suspend fun pruneCaptureLogs(keepDays: Int = 7) {
+        logDao.prune(System.currentTimeMillis() - keepDays * 24L * 60 * 60 * 1000)
+    }
+    suspend fun clearCaptureLogs() = logDao.clear()
 
     companion object {
         /**
