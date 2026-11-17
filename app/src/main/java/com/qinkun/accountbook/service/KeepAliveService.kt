@@ -93,48 +93,23 @@ class KeepAliveService : Service() {
     }
 
     private suspend fun checkPaymentOnce() {
-        val (pkg, leftAt) = PaymentWatcher.detectJustLeft(this) ?: return
-
-        // 5 分钟内提醒过一次就不再打扰
-        val now = System.currentTimeMillis()
-        if (now - PaymentWatcher.lastPromptAt(this) < 5 * 60_000L) return
+        // 停留时长不够（只是看了一眼）这里就返回了；已处理过的也不会再返回
+        val hit = PaymentWatcher.detectJustLeft(this) ?: return
 
         // 离开支付 App 之后已经有新账 → 说明自动记账抓到了，别多嘴
         val lastTx = runCatching { Repo(this).lastTxAt() }.getOrNull()
-        if (lastTx != null && lastTx >= leftAt) return
-
-        PaymentWatcher.markPrompted(this, now)
-        showPromptNotification(PaymentWatcher.appLabel(pkg))
-    }
-
-    private fun showPromptNotification(appLabel: String) {
-        ensurePromptChannel(this)
-        val open = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                    Intent.FLAG_ACTIVITY_NEW_TASK
-            putExtra(MainActivity.EXTRA_OPEN_ADD, true)
+        if (lastTx != null && lastTx >= hit.leaveAt) {
+            PaymentWatcher.markHandled(this, hit.pkg, hit.leaveAt)
+            return
         }
-        val pi = PendingIntent.getActivity(
-            this, 2001, open,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val n = NotificationCompat.Builder(this, PROMPT_CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentTitle("刚才是不是付了钱？")
-            .setContentText("$appLabel 里好像有一笔，自动记账没抓到。点这里补一笔")
-            .setStyle(
-                NotificationCompat.BigTextStyle()
-                    .bigText("$appLabel 里好像有一笔，自动记账没抓到（这类付款不发通知）。点这里 1 秒补上。")
-            )
-            .setContentIntent(pi)
-            .setAutoCancel(true)
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-            .setCategory(NotificationCompat.CATEGORY_REMINDER)
-            .build()
-        runCatching {
-            val mgr = getSystemService(NotificationManager::class.java)
-            mgr?.notify(PROMPT_NOTIFICATION_ID, n)
-        }
+
+        // 首页已经挂着一张待确认卡片了，不重复叠加
+        if (PaymentWatcher.pending.value != null) return
+
+        // 只记一笔待确认，不弹通知（安静模式）
+        PaymentWatcher.setPending(this, hit.pkg)
+        PaymentWatcher.markHandled(this, hit.pkg, hit.leaveAt)
+        Log.i(TAG, "检测到可能的漏记：${PaymentWatcher.appLabel(hit.pkg)} 停留 ${hit.foregroundMs / 1000}s（首页待确认）")
     }
 
     private fun buildNotification(ctx: Context): android.app.Notification {
@@ -161,8 +136,6 @@ class KeepAliveService : Service() {
         private const val TAG = "KeepAlive"
         private const val CHANNEL_ID = "keep_alive_channel"
         private const val NOTIFICATION_ID = 1001
-        private const val PROMPT_CHANNEL_ID = "payment_prompt_channel"
-        private const val PROMPT_NOTIFICATION_ID = 2001
 
         fun ensureChannel(ctx: Context) {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
@@ -175,20 +148,6 @@ class KeepAliveService : Service() {
             ).apply {
                 description = "让系统不要清掉记账进程"
                 setShowBadge(false)
-            }
-            mgr.createNotificationChannel(ch)
-        }
-
-        fun ensurePromptChannel(ctx: Context) {
-            val mgr = ctx.getSystemService(NotificationManager::class.java) ?: return
-            if (mgr.getNotificationChannel(PROMPT_CHANNEL_ID) != null) return
-            val ch = NotificationChannel(
-                PROMPT_CHANNEL_ID,
-                "付款后提醒补录",
-                NotificationManager.IMPORTANCE_DEFAULT,
-            ).apply {
-                description = "检测到你可能付款后，提醒补一笔（这类付款不发系统通知）"
-                setShowBadge(true)
             }
             mgr.createNotificationChannel(ch)
         }

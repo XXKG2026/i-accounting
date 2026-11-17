@@ -174,7 +174,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                     Column(Modifier.weight(1f)) {
                         Text("付款后提醒补录", fontSize = 15.sp,
                             fontWeight = FontWeight.Medium, color = AppColor.ink)
-                        Text("扫码收款、网页支付不发通知，付完提醒你补一笔",
+                        Text("扫码收款、网页支付不发通知；付完在首页提示补一笔（不弹通知）",
                             fontSize = 11.sp, color = AppColor.inkSoft)
                     }
                     Switch(

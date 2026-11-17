@@ -41,6 +41,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         AppContextHolder.init(application)
         com.qinkun.accountbook.service.KeepAlive.restoreIfNeeded(this)
+        com.qinkun.accountbook.service.PaymentWatcher.restorePending(this)
         openAdd.value = intent?.getBooleanExtra(EXTRA_OPEN_ADD, false) ?: false
         setContent {
             AppRoot(vm, openAdd)

@@ -23,6 +23,7 @@ import android.content.Intent
 import android.provider.Settings
 import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.repeatOnLifecycle
+import com.qinkun.accountbook.service.PaymentWatcher
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -90,6 +91,35 @@ fun HomeScreen(vm: MainViewModel, modifier: Modifier = Modifier, openAdd: androi
                                 )
                             }
                         }) { Text("去修复", fontSize = 12.sp, color = AppColor.expense) }
+                    }
+                }
+            }
+
+            // ---- 付款待确认（安静模式：不弹通知，只在这里提示）----
+            val pendingPay by PaymentWatcher.pending.collectAsState()
+            pendingPay?.takeIf { PaymentWatcher.isPendingFresh(it) }?.let { pp ->
+                Surface(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    color = AppColor.accent.copy(alpha = 0.12f)
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("${pp.app}里好像有一笔没记上", fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium, color = AppColor.ink)
+                            Text("这类付款不发通知，猜的，不是就点「没有」", fontSize = 10.sp,
+                                color = AppColor.inkSoft)
+                        }
+                        TextButton(onClick = { PaymentWatcher.clearPending(ctx) }) {
+                            Text("没有", fontSize = 12.sp, color = AppColor.inkSoft)
+                        }
+                        TextButton(onClick = {
+                            PaymentWatcher.clearPending(ctx)
+                            showAdd = true
+                        }) { Text("记一笔", fontSize = 12.sp, color = AppColor.accent) }
                     }
                 }
             }
