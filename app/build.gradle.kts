@@ -13,7 +13,7 @@ android {
         applicationId = "com.qinkun.accountbook"
         minSdk = 31
         targetSdk = 36
-        versionCode = 12
+        versionCode = 13
         versionName = "2.5"
     }
 
