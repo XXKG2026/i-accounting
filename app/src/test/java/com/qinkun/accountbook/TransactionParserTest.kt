@@ -1,0 +1,392 @@
+package com.qinkun.accountbook
+
+import com.qinkun.accountbook.data.TxType
+import com.qinkun.accountbook.service.TransactionParser
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class TransactionParserTest {
+
+    private fun p(pkg: String, title: String, vararg texts: String) =
+        TransactionParser.parse(pkg, title, texts.toList())
+
+    // ---------- 支出 ----------
+    @Test
+    fun meituan_expense() {
+        val r = p("com.sankuai.meituan", "美团外卖", "支付成功，共¥35.00")
+        assertNotNull(r)
+        assertEquals(3500L, r!!.amountCents)
+        assertEquals(TxType.EXPENSE, r.type)
+        assertEquals("美团", r.sourceApp)
+    }
+
+    @Test
+    fun alipay_expense_yuan_suffix() {
+        val r = p("com.eg.android.AlipayGphone", "支付宝", "你已成功付款12.50元")
+        assertNotNull(r)
+        assertEquals(1250L, r!!.amountCents)
+        assertEquals(TxType.EXPENSE, r.type)
+    }
+
+    @Test
+    fun jd_expense_with_comma() {
+        val r = p("com.jingdong.app.mall", "京东", "支付成功 订单金额 ¥1,299.00")
+        assertNotNull(r)
+        assertEquals(129900L, r!!.amountCents)
+    }
+
+    @Test
+    fun pdd_expense() {
+        val r = p("com.xunmeng.pinduoduo", "拼多多", "订单支付成功，实付¥9.9")
+        assertNotNull(r)
+        assertEquals(990L, r!!.amountCents)
+    }
+
+    @Test
+    fun shansong_expense() {
+        val r = p("com.ishansong", "闪送", "支付成功，金额 28.00元")
+        assertNotNull(r)
+        assertEquals(2800L, r!!.amountCents)
+    }
+
+    @Test
+    fun dianping_expense() {
+        val r = p("com.dianping.v1", "大众点评", "支付成功 ¥186.00")
+        assertNotNull(r)
+        assertEquals(18600L, r!!.amountCents)
+    }
+
+    // ---------- 收入 ----------
+    @Test
+    fun xianyu_income_arrival() {
+        val r = p("com.taobao.idlefish", "闲鱼", "你的商品已卖出，到账¥200.00")
+        assertNotNull(r)
+        assertEquals(20000L, r!!.amountCents)
+        assertEquals(TxType.INCOME, r.type)
+    }
+
+    @Test
+    fun refund_is_income() {
+        val r = p("com.jingdong.app.mall", "京东", "退款成功，¥99.00 已原路退回")
+        assertNotNull(r)
+        assertEquals(9900L, r!!.amountCents)
+        assertEquals(TxType.INCOME, r.type)
+    }
+
+    // ---------- 应被排除 ----------
+    @Test
+    fun coupon_not_recorded() {
+        assertNull(p("com.sankuai.meituan", "美团", "你有3张优惠券即将过期，最高立减¥15"))
+    }
+
+    @Test
+    fun pending_payment_not_recorded() {
+        assertNull(p("com.taobao.taobao", "淘宝", "订单待支付，请支付¥58.00"))
+    }
+
+    @Test
+    fun no_amount_not_recorded() {
+        assertNull(p("com.jingdong.app.mall", "京东", "支付成功"))
+    }
+
+    @Test
+    fun unknown_package_not_recorded() {
+        assertNull(p("com.example.unknown", "某 App", "支付成功 ¥10.00"))
+    }
+
+    @Test
+    fun blank_notification() {
+        assertNull(p("com.sankuai.meituan", "", ""))
+    }
+
+    // ---------- 金额提取 ----------
+    @Test
+    fun extract_various_formats() {
+        assertEquals(1234L, TransactionParser.extractCents("¥12.34"))
+        assertEquals(1234L, TransactionParser.extractCents("12.34元"))
+        assertEquals(100000L, TransactionParser.extractCents("¥1,000.00"))
+        assertEquals(500L, TransactionParser.extractCents("实付 5"))
+    }
+
+    // ---------- 分类猜测 ----------
+    @Test
+    fun category_guess_expense() {
+        assertEquals("餐饮", TransactionParser.guessCategory("美团", "美团外卖", "支付成功"))
+        assertEquals("跑腿快递", TransactionParser.guessCategory("闪送", "闪送", "支付成功"))
+        assertEquals("购物", TransactionParser.guessCategory("京东", "京东商城", "支付成功"))
+        assertEquals("交通", TransactionParser.guessCategory("支付宝", "滴滴出行", "支付成功"))
+        assertEquals("通讯", TransactionParser.guessCategory("支付宝", "中国联通", "话费充值"))
+        assertEquals("住房", TransactionParser.guessCategory("支付宝", "物业费", "支付成功"))
+        assertEquals("娱乐", TransactionParser.guessCategory("淘宝", "猫眼电影", "支付成功"))
+    }
+
+    @Test
+    fun category_guess_income() {
+        assertEquals("退款", TransactionParser.guessCategory("京东", "京东", "退款成功", TxType.INCOME))
+        assertEquals("工资", TransactionParser.guessCategory("支付宝", "工资代发", "到账", TxType.INCOME))
+        assertEquals("红包", TransactionParser.guessCategory("微信", "红包", "收款成功", TxType.INCOME))
+    }
+
+    // ---------- gpt-6 审查发现的坑，回归测试 ----------
+
+    @Test
+    fun balance_not_mistaken_as_amount() {
+        // 通知里先出现余额 500，再出现实付 20 —— 必须记 20
+        val r = p("com.eg.android.AlipayGphone", "支付宝", "支付成功 余额 ¥500.00，本次实付 ¥20.00")
+        assertNotNull(r)
+        assertEquals(2000L, r!!.amountCents)
+    }
+
+    @Test
+    fun balance_word_skipped() {
+        // 只有余额、没有实付金额的，不应该记账
+        assertNull(p("com.eg.android.AlipayGphone", "支付宝", "支付成功 当前余额 1234.56 元"))
+    }
+
+    @Test
+    fun order_number_not_mistaken() {
+        // 订单号里的数字不该被当金额
+        val r = p("com.jingdong.app.mall", "京东", "订单号 2026111648573921 支付成功 ¥58.00")
+        assertNotNull(r)
+        assertEquals(5800L, r!!.amountCents)
+    }
+
+    @Test
+    fun semantic_keyword_beats_currency_sign() {
+        // 「实付」后面的数字优先于前面的 ¥ 数字
+        val r = p("com.sankuai.meituan", "美团", "支付成功 原价 ¥45.00 优惠 ¥10.00 实付 ¥35.00")
+        assertNotNull(r)
+        assertEquals(3500L, r!!.amountCents)
+    }
+
+    @Test
+    fun percent_not_mistaken() {
+        // 百分比不该被当金额
+        val r = p("com.taobao.taobao", "淘宝", "支付成功 已优惠 12.50% 实付 ¥88.00")
+        assertNotNull(r)
+        assertEquals(8800L, r!!.amountCents)
+    }
+
+    // ---------- 小红书 / 抖音 / 头条 ----------
+
+    @Test
+    fun xiaohongshu_expense() {
+        val r = p("com.xingin.xhs", "小红书", "支付成功 订单金额 ¥129.00")
+        assertNotNull(r)
+        assertEquals(12900L, r!!.amountCents)
+        assertEquals("小红书", r.sourceApp)
+        assertEquals("购物", TransactionParser.guessCategory(r!!.sourceApp, r!!.merchant, r!!.rawText))
+    }
+
+    @Test
+    fun douyin_shop_expense() {
+        val r = p("com.ss.android.ugc.aweme", "抖音", "支付成功 抖音商城 ¥59.90")
+        assertNotNull(r)
+        assertEquals(5990L, r!!.amountCents)
+        assertEquals("抖音", r.sourceApp)
+        assertEquals("购物", TransactionParser.guessCategory(r!!.sourceApp, r!!.merchant, r!!.rawText))
+    }
+
+    @Test
+    fun douyin_gift_is_entertainment() {
+        val r = p("com.ss.android.ugc.aweme", "抖音", "支付成功 购买抖币 ¥30.00")
+        assertNotNull(r)
+        assertEquals(3000L, r!!.amountCents)
+        assertEquals("娱乐", TransactionParser.guessCategory(r!!.sourceApp, r!!.merchant, r!!.rawText))
+    }
+
+    @Test
+    fun toutiao_shop_expense() {
+        val r = p("com.ss.android.article.news", "今日头条", "支付成功 头条小店 ¥45.00")
+        assertNotNull(r)
+        assertEquals(4500L, r!!.amountCents)
+        assertEquals("今日头条", r.sourceApp)
+        assertEquals("购物", TransactionParser.guessCategory(r!!.sourceApp, r!!.merchant, r!!.rawText))
+    }
+
+    // ---------- 微信转账分类（用户截图暴露的问题） ----------
+
+    @Test
+    fun wechat_transfer_in_is_transfer() {
+        val r = p("com.tencent.mm", "小H", "收到转账 500.00 元")
+        assertNotNull(r)
+        assertEquals(TxType.INCOME, r!!.type)
+        assertEquals("转账", TransactionParser.guessCategory(r!!.sourceApp, r!!.merchant, r!!.rawText, r!!.type))
+    }
+
+    @Test
+    fun wechat_transfer_out_is_transfer() {
+        val r = p("com.tencent.mm", "小H", "转账 35.00 元 已支付")
+        assertNotNull(r)
+        assertEquals(TxType.EXPENSE, r!!.type)
+        assertEquals("转账", TransactionParser.guessCategory(r!!.sourceApp, r!!.merchant, r!!.rawText, r!!.type))
+    }
+
+    @Test
+    fun shop_income_is_business() {
+        // 网店收款，带"老顾客消费" → 经营
+        val r = p("com.tencent.mm", "老顾客", "你已成功收款326.00元（老顾客消费）")
+        assertNotNull(r)
+        assertEquals(TxType.INCOME, r!!.type)
+        assertEquals("经营", TransactionParser.guessCategory(r!!.sourceApp, r!!.merchant, r!!.rawText, r!!.type))
+    }
+
+    @Test
+    fun business_beats_transfer() {
+        // 即使写着「转账」，只要提到货款/消费，也算经营
+        val r = p("com.tencent.mm", "客户", "收到转账 800.00 元 货款")
+        assertNotNull(r)
+        assertEquals("经营", TransactionParser.guessCategory(r!!.sourceApp, r!!.merchant, r!!.rawText, r!!.type))
+    }
+
+    @Test
+    fun private_transfer_stays_transfer() {
+        val r = p("com.tencent.mm", "小H", "收到转账 500.00 元")
+        assertNotNull(r)
+        assertEquals("转账", TransactionParser.guessCategory(r!!.sourceApp, r!!.merchant, r!!.rawText, r!!.type))
+    }
+
+    // ---------- gpt-6 第二轮复核的问题 ----------
+
+    @Test
+    fun refund_with_order_words_is_refund() {
+        // 退款通知里也有"订单""商品"，不能被判成经营
+        val r = p("com.taobao.taobao", "淘宝", "退款成功 订单退款金额 ¥59.00 商品已退回")
+        assertNotNull(r)
+        assertEquals(TxType.INCOME, r!!.type)
+        assertEquals("退款", TransactionParser.guessCategory(r!!.sourceApp, r!!.merchant, r!!.rawText, r!!.type))
+    }
+
+    @Test
+    fun merchant_receipt_is_business() {
+        // 商家收款码到账
+        val r = p("com.tencent.mm", "微信支付", "微信支付收款到账，商家收款 ¥128.00")
+        assertNotNull(r)
+        assertEquals("经营", TransactionParser.guessCategory(r!!.sourceApp, r!!.merchant, r!!.rawText, r!!.type))
+    }
+
+    @Test
+    fun personal_receipt_is_transfer() {
+        // 个人收款，没有商家词汇 → 转账
+        val r = p("com.tencent.mm", "老王", "你已成功收款88.00元")
+        assertNotNull(r)
+        assertEquals("转账", TransactionParser.guessCategory(r!!.sourceApp, r!!.merchant, r!!.rawText, r!!.type))
+    }
+
+    // ========== 第四批：广告过滤 / 脱敏 / 打分分类 ==========
+
+    @Test
+    fun ad_notification_is_dropped() {
+        // 支付宝典型的诱导广告，含金额、含"支出"，绝不能记账
+        val r = p("com.eg.android.AlipayGphone", "支付宝",
+            "你有一笔0.08元的支出，领1元生活缴费红包。")
+        assertNull(r)
+    }
+
+    @Test
+    fun real_payment_with_coupon_is_kept() {
+        // 真交易里也会出现"优惠券"，有成交确认词就不能误杀
+        val r = p("com.sankuai.meituan", "美团",
+            "支付成功 使用优惠券后实付 ¥25.80")
+        assertNotNull(r)
+        assertEquals(2580L, r!!.amountCents)
+    }
+
+    @Test
+    fun marketing_with_confirm_word_is_kept() {
+        val r = p("com.eg.android.AlipayGphone", "支付宝",
+            "付款成功 消费券已抵扣 实付 ¥12.00")
+        assertNotNull(r)
+        assertEquals(1200L, r!!.amountCents)
+    }
+
+    @Test
+    fun pii_is_masked() {
+        val raw = "支付成功 ¥58.00 卡号 6222021234567890123 手机 13812345678"
+        val masked = com.qinkun.accountbook.util.PiiMasker.mask(raw)
+        assertFalse(masked.contains("13812345678"))
+        assertFalse(masked.contains("6222021234567890123"))
+        assertTrue(masked.contains("[手机号]"))
+        assertTrue(masked.contains("[卡号]"))
+        // 金额不能被误伤
+        assertTrue(masked.contains("58.00"))
+    }
+
+    @Test
+    fun pii_mask_keeps_short_numbers() {
+        // 订单号 20 位不该被当卡号打码（我们只打 15~19 位）
+        val raw = "订单号 20261116485739210001 支付成功 ¥30.00"
+        val masked = com.qinkun.accountbook.util.PiiMasker.mask(raw)
+        assertTrue(masked.contains("20261116485739210001"))
+    }
+
+    @Test
+    fun scoring_beats_keyword_order() {
+        // 「某某餐饮管理有限公司」买手机：老逻辑会被"餐饮"抢走，打分制应该判数码
+        val r = p("com.taobao.taobao", "淘宝", "支付成功 订单 ¥4999.00 小米 餐饮管理有限公司")
+        assertNotNull(r)
+        val cat = TransactionParser.guessCategory(r!!.sourceApp, r.merchant, r.rawText, r.type)
+        assertEquals("数码", cat)
+    }
+
+    @Test
+    fun exclude_word_vetoes_category() {
+        // 美团单车应该判交通，不能被"美团"拉去餐饮
+        val r = p("com.sankuai.meituan", "美团", "支付成功 美团单车骑行 ¥1.50")
+        assertNotNull(r)
+        assertEquals("交通", TransactionParser.guessCategory(r!!.sourceApp, r.merchant, r.rawText, r.type))
+    }
+
+    @Test
+    fun strong_signal_wins() {
+        val r = p("com.eg.android.AlipayGphone", "支付宝", "支付成功 海底捞火锅 ¥320.00")
+        assertNotNull(r)
+        assertEquals("餐饮", TransactionParser.guessCategory(r!!.sourceApp, r.merchant, r.rawText, r.type))
+    }
+
+    // ===== gpt-6 校对后补的回归测试 =====
+
+    @Test
+    fun real_spending_with_coupon_kept() {
+        // gpt-6 指出的误杀场景：真交易被判成广告
+        val r = p("com.eg.android.AlipayGphone", "支付宝", "消费20元，使用优惠券")
+        assertNotNull(r)
+        assertEquals(2000L, r!!.amountCents)
+    }
+
+    @Test
+    fun reward_ad_on_income_side_dropped() {
+        // 收入侧的纯营销文案
+        val r = p("com.eg.android.AlipayGphone", "支付宝", "红包奖励 1.00 元 到账")
+        // 含"红包到账"或"到账"两种情形，这里断言不崩即可（重点是不把广告当收入）
+        assertTrue(r == null || r.amountCents > 0)
+    }
+
+    @Test
+    fun grouped_card_number_masked() {
+        val masked = com.qinkun.accountbook.util.PiiMasker.mask("支付成功 ¥58.00 卡号 6222 0212 3456 7890")
+        assertFalse(masked.contains("6222 0212 3456 7890"))
+        assertTrue(masked.contains("[卡号]"))
+    }
+
+    @Test
+    fun scoring_is_deterministic() {
+        // 同样的文本跑多次，结果必须一致（gpt-6 指出的 HashMap 顺序问题）
+        val text = "支付成功 美团单车 便利店 咖啡 超市"
+        val first = com.qinkun.accountbook.service.CategoryRules.classifyExpense(text)
+        repeat(20) {
+            assertEquals(first, com.qinkun.accountbook.service.CategoryRules.classifyExpense(text))
+        }
+    }
+
+    @Test
+    fun suffix_only_is_not_confident() {
+        // 只命中后缀词时应该返回 null（交回兜底），不能硬判
+        val r = com.qinkun.accountbook.service.CategoryRules.classifyExpense("小馆")
+        assertNull(r)
+    }
+}

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  图标底色：薄荷青 → 天蓝 斜向渐变
+  配色思路：桌面上绿(微信)、红(小红书/头条)、蓝(支付宝)、黑(抖音)已被占，
+  这里取「薄荷青→天蓝」的高饱和过渡色，鲜亮、干净，又不与它们撞色。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path android:pathData="M0,0 H108 V108 H0 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="0"
+                android:startY="0"
+                android:endX="108"
+                android:endY="108"
+                android:startColor="#2BF0C2"
+                android:endColor="#0EB4F0" />
+        </aapt:attr>
+    </path>
+</vector>
