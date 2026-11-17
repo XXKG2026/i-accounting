@@ -3,6 +3,7 @@ package com.qinkun.accountbook
 import com.qinkun.accountbook.data.TxType
 import com.qinkun.accountbook.service.TransactionParser
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -682,5 +683,39 @@ class TransactionParserTest {
         val r = TransactionParser.parse("com.tencent.mm", "微信支付", listOf("微信支付凭证", "付款金额 ¥36.00"))
         assertNotNull(r); r!!
         assertEquals(3600L, r.amountCents)
+    }
+
+    // ============================================================
+    //  v2.7 「账户余额」不再被当成转账
+    //  线上真实事故：71 元的餐馆消费被判成「转账」，因为付款页带着
+    //  「付款方式 账户余额」，而兜底规则里有裸「余额」。
+    // ============================================================
+
+    @Test
+    fun account_balance_label_is_not_transfer() {
+        val raw = "支付宝 支付成功 支付成功￥71.00 天外山 ￥71.00 付款方式 账户余额 完成 回首页 回首页"
+        val r = TransactionParser.guessCategory("支付宝", "天外山", raw, TxType.EXPENSE)
+        assertNotEquals("转账", r)
+    }
+
+    @Test
+    fun real_transfer_is_still_transfer() {
+        val r = TransactionParser.guessCategory(
+            "支付宝", "张三", "支付宝 转账成功 向张三转账 100.00 元", TxType.EXPENSE
+        )
+        assertEquals("转账", r)
+    }
+
+    @Test
+    fun withdraw_is_still_transfer() {
+        val r = TransactionParser.guessCategory("支付宝", "提现", "提现到银行卡 500.00 元", TxType.EXPENSE)
+        assertEquals("转账", r)
+    }
+
+    @Test
+    fun plain_expense_page_with_balance_falls_back_to_other() {
+        // 商户不在词库、只是付款页标签 → 应该落到「其他」，不是「转账」
+        val raw = "支付宝 支付成功 支付成功￥71.00 天外山 ￥71.00 付款方式 账户余额 完成 回首页"
+        assertEquals("其他", TransactionParser.guessCategory("支付宝", "天外山", raw, TxType.EXPENSE))
     }
 }

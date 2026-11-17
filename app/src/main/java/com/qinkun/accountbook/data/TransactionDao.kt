@@ -25,6 +25,20 @@ interface TransactionDao {
     @Query("SELECT * FROM transactions WHERE rawText = :raw AND occurredAt > :since LIMIT 1")
     suspend fun findDuplicate(raw: String, since: Long): Transaction?
 
+    /**
+     * 同一笔钱可能被两条通道各抓一次：
+     *   · 无障碍读付款结果页 → 「支付宝 支付成功 支付成功￥71.00 天外山 …」
+     *   · 通知监听读通知栏   → 「交易提醒 你有一笔71.00元的支出，点此查看详情。」
+     * 两者原文完全不同，按文字判重会漏，于是同金额同来源就近再判一次。
+     */
+    @Query(
+        """SELECT * FROM transactions
+           WHERE amountCents = :amount AND sourceApp = :app
+             AND occurredAt BETWEEN :from AND :to
+           ORDER BY ABS(occurredAt - :center) LIMIT 1"""
+    )
+    suspend fun findTwin(amount: Long, app: String, from: Long, to: Long, center: Long): Transaction?
+
     @Insert
     suspend fun insert(tx: Transaction): Long
 
@@ -34,9 +48,38 @@ interface TransactionDao {
      */
     @androidx.room.Transaction
     suspend fun insertIfNew(tx: Transaction, windowMs: Long = 5 * 60_000): Long {
-        val dup = findDuplicate(tx.rawText, tx.occurredAt - windowMs)
-        if (dup != null) return -1L
+        // 第一级：原文相同 → 肯定是同一条通知的重发
+        if (findDuplicate(tx.rawText, tx.occurredAt - windowMs) != null) return -1L
+
+        // 第二级：无障碍和通知各抓一次 → 同金额、同来源、时间相邻，算同一笔。
+        // 窗口取 ±90 秒：页面重绘和通知到达通常相差几秒；再宽就会吞掉
+        // 「同一家店连买两次同样价钱」这种真事。
+        val twin = findTwin(
+            tx.amountCents, tx.sourceApp,
+            tx.occurredAt - TWIN_WINDOW_MS, tx.occurredAt + TWIN_WINDOW_MS, tx.occurredAt,
+        )
+        if (twin != null) {
+            // 已存在的那条可能信息更少（比如通知版没有商户名），用新的补全它，
+            // 但绝不新增一条。
+            val betterMerchant = tx.merchant.isNotBlank() && tx.merchant != "手动记账" &&
+                (twin.merchant.isBlank() || twin.merchant == "手动记账")
+            if (betterMerchant) {
+                update(
+                    twin.copy(
+                        merchant = tx.merchant,
+                        category = tx.category,
+                        rawText = tx.rawText.ifBlank { twin.rawText },
+                    )
+                )
+            }
+            return -1L
+        }
         return insert(tx)
+    }
+
+    companion object {
+        /** 双通道合并窗口：±90 秒 */
+        const val TWIN_WINDOW_MS = 90_000L
     }
 
     @Update
