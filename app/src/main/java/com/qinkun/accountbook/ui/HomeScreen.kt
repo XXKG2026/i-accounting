@@ -32,13 +32,21 @@ import com.qinkun.accountbook.data.Transaction
 import com.qinkun.accountbook.data.TxType
 
 @Composable
-fun HomeScreen(vm: MainViewModel, modifier: Modifier = Modifier) {
+fun HomeScreen(vm: MainViewModel, modifier: Modifier = Modifier, openAdd: androidx.compose.runtime.MutableState<Boolean>? = null) {
     val ps by vm.periodState.collectAsState()
     val title by vm.rangeTitle.collectAsState()
     val tx by vm.transactions.collectAsState()
     val expense by vm.expense.collectAsState()
     val income by vm.income.collectAsState()
     var showAdd by remember { mutableStateOf(false) }
+
+    // 从「付款提醒」通知点进来时，自动弹出记一笔
+    LaunchedEffect(openAdd?.value) {
+        if (openAdd?.value == true) {
+            showAdd = true
+            openAdd.value = false
+        }
+    }
     var selectedTx by remember { mutableStateOf<Transaction?>(null) }
     var deleteTarget by remember { mutableStateOf<Transaction?>(null) }
 

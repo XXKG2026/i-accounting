@@ -25,6 +25,8 @@ class Repo(context: Context) {
     suspend fun update(tx: Transaction) = dao.update(tx)
     suspend fun findDuplicate(raw: String, since: Long) = dao.findDuplicate(raw, since)
 
+    suspend fun lastTxAt(): Long? = dao.lastTxAt()
+
     // ---- 补录辅助 ----
     suspend fun frequentMerchants(limit: Int = 12): List<String> = dao.frequentMerchants(limit)
     suspend fun recentCategories(type: TxType, since: Long): List<String> = dao.recentCategories(type, since)

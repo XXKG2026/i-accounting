@@ -35,6 +35,9 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import com.qinkun.accountbook.service.KeepAlive
+import com.qinkun.accountbook.service.PaymentWatcher
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import com.qinkun.accountbook.service.TransactionParser
 
 @Composable
@@ -45,6 +48,14 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     var testResult by remember { mutableStateOf<String?>(null) }
     var testPkg by remember { mutableStateOf("com.sankuai.meituan") }
     var keepAlive by remember { mutableStateOf(KeepAlive.isEnabled(ctx)) }
+    var promptOn by remember { mutableStateOf(PaymentWatcher.isEnabled(ctx)) }
+    var usageOk by remember { mutableStateOf(PaymentWatcher.hasUsageAccess(ctx)) }
+    // 从系统设置页返回时刷新权限状态
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        usageOk = PaymentWatcher.hasUsageAccess(ctx)
+        promptOn = PaymentWatcher.isEnabled(ctx)
+        keepAlive = KeepAlive.isEnabled(ctx)
+    }
     var showLogs by remember { mutableStateOf(false) }
     var logs by remember { mutableStateOf<List<CaptureLog>>(emptyList()) }
     val scope = rememberCoroutineScope()
@@ -142,6 +153,60 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                             keepAlive = on
                         }
                     )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+
+        // ---- 付款后提醒补录 ----
+        Card(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = AppColor.surface)
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("付款后提醒补录", fontSize = 15.sp,
+                            fontWeight = FontWeight.Medium, color = AppColor.ink)
+                        Text("扫码收款、网页支付不发通知，付完提醒你补一笔",
+                            fontSize = 11.sp, color = AppColor.inkSoft)
+                    }
+                    Switch(
+                        checked = promptOn,
+                        onCheckedChange = { v ->
+                            promptOn = v
+                            PaymentWatcher.setEnabled(ctx, v)
+                            if (v) {
+                                // 提醒依赖常驻服务，顺手把保活也打开
+                                if (!KeepAlive.isEnabled(ctx)) {
+                                    keepAlive = true
+                                    KeepAlive.setEnabled(ctx, true)
+                                }
+                                if (!PaymentWatcher.hasUsageAccess(ctx)) {
+                                    PaymentWatcher.openUsageAccessSettings(ctx)
+                                }
+                            }
+                        }
+                    )
+                }
+
+                if (promptOn && !usageOk) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("还差一步：授权「使用情况访问」", fontSize = 12.sp, color = AppColor.expense)
+                        Spacer(Modifier.width(8.dp))
+                        TextButton(onClick = { PaymentWatcher.openUsageAccessSettings(ctx) }) {
+                            Text("去授权", fontSize = 12.sp, color = AppColor.accent)
+                        }
+                    }
+                    Text("只读「哪个 App 在前台」，读不到屏幕内容",
+                        fontSize = 10.sp, color = AppColor.inkSoft)
                 }
             }
         }

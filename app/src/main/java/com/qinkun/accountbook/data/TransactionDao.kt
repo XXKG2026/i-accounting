@@ -61,6 +61,10 @@ interface TransactionDao {
     )
     suspend fun frequentMerchants(limit: Int = 12): List<String>
 
+    /** 最后一条记账的时间 —— 判断"这次离开支付 App 之后有没有已经记上" */
+    @Query("SELECT MAX(occurredAt) FROM transactions")
+    suspend fun lastTxAt(): Long?
+
     /**
      * 最近用过的分类（按笔数降序），用来把高频分类排到选择列表前面。
      */
