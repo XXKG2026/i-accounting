@@ -35,6 +35,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import com.qinkun.accountbook.service.KeepAlive
+import com.qinkun.accountbook.service.PaymentAccessibilityService
 import com.qinkun.accountbook.service.PaymentWatcher
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
@@ -49,12 +50,14 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     var testPkg by remember { mutableStateOf("com.sankuai.meituan") }
     var keepAlive by remember { mutableStateOf(KeepAlive.isEnabled(ctx)) }
     var promptOn by remember { mutableStateOf(PaymentWatcher.isEnabled(ctx)) }
+    var scanA11y by remember { mutableStateOf(PaymentAccessibilityService.isEnabled(ctx)) }
     var usageOk by remember { mutableStateOf(PaymentWatcher.hasUsageAccess(ctx)) }
     // 从系统设置页返回时刷新权限状态
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         usageOk = PaymentWatcher.hasUsageAccess(ctx)
         promptOn = PaymentWatcher.isEnabled(ctx)
         keepAlive = KeepAlive.isEnabled(ctx)
+        scanA11y = PaymentAccessibilityService.isEnabled(ctx)
     }
     var showLogs by remember { mutableStateOf(false) }
     var logs by remember { mutableStateOf<List<CaptureLog>>(emptyList()) }
@@ -154,6 +157,54 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                         }
                     )
                 }
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+
+        // ---- 扫码自动抓取（无障碍）----
+        Card(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = AppColor.surface)
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("扫码自动抓取", fontSize = 15.sp,
+                            fontWeight = FontWeight.Medium, color = AppColor.ink)
+                        Text(
+                            if (scanA11y) "已开启：微信/支付宝付款后自动记上"
+                            else "扫码付款不发通知，开启后可自动识别付款结果页",
+                            fontSize = 11.sp,
+                            color = if (scanA11y) AppColor.income else AppColor.inkSoft
+                        )
+                    }
+                    if (scanA11y) {
+                        Text("已开启", fontSize = 12.sp, color = AppColor.income)
+                    } else {
+                        Button(
+                            onClick = {
+                                runCatching {
+                                    ctx.startActivity(
+                                        Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    )
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = AppColor.accent)
+                        ) { Text("去开启", fontSize = 13.sp) }
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "需要无障碍权限。本 App 只订阅微信和支付宝，只看付款成功页，不模拟点击、不联网。",
+                    fontSize = 10.sp, color = AppColor.inkSoft
+                )
             }
         }
 

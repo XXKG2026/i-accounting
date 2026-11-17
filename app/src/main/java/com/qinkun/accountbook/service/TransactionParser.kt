@@ -164,7 +164,18 @@ object TransactionParser {
         val transferOut = Regex("""向.{1,20}?转账""").containsMatchIn(blob) &&
                 !blob.contains("向你转账")
 
-        val hasExpense = EXPENSE_WORDS.any { blob.contains(it) } || transferOut
+        // 少数极简通知只有「微信支付 / ¥18.00」这种，没有任何动词。
+        // 兜底认成支出，但前置条件卡得很死（见 shortPayHint），宁可漏记也不误记。
+        val shortPayHint =
+            (pkg == "com.tencent.mm" || pkg == "com.eg.android.AlipayGphone") &&
+                (title.contains("微信支付") || title.contains("支付宝") || title.contains("i记账 支付成功")) &&
+                texts.size <= 3 &&
+                EXCLUDE_WORDS.none { blob.contains(it) } &&
+                listOf("账单", "明细", "余额", "额度", "还款", "收益", "理财", "积分", "退款").none {
+                    blob.contains(it)
+                }
+
+        val hasExpense = EXPENSE_WORDS.any { blob.contains(it) } || transferOut || shortPayHint
         val hasIncome = INCOME_WORDS.any { blob.contains(it) }
         if (!hasExpense && !hasIncome) { onFail("没找到支付/收款关键词"); return null }
 
@@ -221,6 +232,47 @@ object TransactionParser {
         Regex("""向([^，,。；;\s]{2,20}?)(?:付款|转账)"""),
         Regex("""([^，,。；;\s0-9]{2,20}?)收款"""),
     )
+
+    /** 扫码结果页上不属于商户名的词 */
+    private val SCAN_NOISE = listOf(
+        "完成", "确定", "返回", "关闭", "查看详情", "商家服务", "账单详情", "账单",
+        "支付方式", "付款方式", "收款方式", "优惠", "优惠券", "积分", "零钱", "余额宝",
+        "花呗", "银行卡", "信用卡", "更多", "详情", "支付成功", "付款成功", "交易成功",
+        "已支付", "微信支付", "支付宝", "扫一扫", "付款码", "收款方", "付款方",
+        // 结果页上常插的广告条，容易被当成商户名
+        "领取", "立减", "立减金", "红包", "去使用", "立即使用", "查看", "广告",
+        "优惠活动", "限时", "开通", "抽奖", "客服", "投诉", "申请退款",
+    )
+
+    /**
+     * 从扫码结果页的**平铺节点文本**里提取商户名。
+     *
+     * 为什么单开一个方法：这类页面是 ["支付成功", "星巴克", "￥32.00", "完成"] 这种
+     * 平铺结构，没有「在 X 消费」的介词，正则模板抓不到。
+     *
+     * 做法：定位「支付成功」这类锚点，往后找第一个既不像金额、也不像按钮的词。
+     */
+    fun extractMerchantFromScanNodes(texts: List<String>): String? {
+        val anchorIdx = texts.indexOfFirst { t -> SCAN_ANCHORS.any { t.contains(it) } }
+        if (anchorIdx < 0) return null
+
+        for (i in anchorIdx + 1 until texts.size) {
+            val raw = texts[i].trim()
+            if (raw.length !in 2..24) continue
+            // 金额
+            if (raw.any { it == '¥' || it == '￥' }) continue
+            if (raw.matches(Regex("""[\\d.,\s]+"""))) continue
+            if (raw.matches(Regex("""[\\d.,]+\\s*元"""))) continue
+            // 按钮/标签词
+            if (SCAN_NOISE.any { raw == it || raw.startsWith(it) }) continue
+            // 纯符号
+            if (raw.none { it.isLetter() }) continue
+            return raw
+        }
+        return null
+    }
+
+    private val SCAN_ANCHORS = listOf("支付成功", "付款成功", "已支付", "交易成功")
 
     /**
      * 从正文里猜商户名。

@@ -32,12 +32,19 @@ class NotifyListener : NotificationListenerService() {
 
         fun str(key: String): String = e.getCharSequence(key)?.toString()?.trim() ?: ""
         val title = str(Notification.EXTRA_TITLE)
-        val texts = listOf(
+
+        // 微信多条消息被折叠时，真正的交易文字在 EXTRA_TEXT_LINES 里，
+        // 只读 text/bigText 会漏掉 —— 例如「[2条] 微信支付: ¥18.00」
+        val textLines = e.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)
+            ?.mapNotNull { it?.toString()?.trim() }
+            .orEmpty()
+
+        val texts = (listOf(
             str(Notification.EXTRA_TEXT),
             str(Notification.EXTRA_BIG_TEXT),
             str(Notification.EXTRA_SUB_TEXT),
             str(Notification.EXTRA_INFO_TEXT),
-        ).filter { it.isNotBlank() }
+        ) + textLines).filter { it.isNotBlank() }.distinct()
 
         if (texts.isEmpty() && title.isBlank()) return
 

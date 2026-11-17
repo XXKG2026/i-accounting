@@ -614,4 +614,73 @@ class TransactionParserTest {
         assertNotNull(r); r!!
         assertEquals(2000L, r.amountCents)
     }
+
+    // ============================================================
+    //  v2.6 扫码支付（无障碍读结果页）
+    // ============================================================
+
+    private fun scanMerchant(pkg: String, vararg nodes: String): String? =
+        TransactionParser.extractMerchantFromScanNodes(nodes.toList())
+
+    @Test
+    fun wechat_scan_page_parsed() {
+        // 微信扫码成功页的真实节点顺序
+        val nodes = listOf("微信支付", "支付成功", "瑞幸咖啡(软件园店)", "￥14.90", "支付方式", "零钱", "完成")
+        val r = TransactionParser.parse("com.tencent.mm", "微信 支付成功", nodes)
+        assertNotNull(r); r!!
+        assertEquals(1490L, r.amountCents)
+        assertEquals(TxType.EXPENSE, r.type)
+        assertEquals("瑞幸咖啡(软件园店)", TransactionParser.extractMerchantFromScanNodes(nodes))
+        assertEquals("餐饮", TransactionParser.guessCategory(r.sourceApp, "瑞幸咖啡(软件园店)", r.rawText, r.type))
+    }
+
+    @Test
+    fun alipay_scan_page_parsed() {
+        val nodes = listOf("支付宝", "付款成功", "全家便利店", "23.50元", "完成")
+        val r = TransactionParser.parse("com.eg.android.AlipayGphone", "支付宝 支付成功", nodes)
+        assertNotNull(r); r!!
+        assertEquals(2350L, r.amountCents)
+        assertEquals("全家便利店", TransactionParser.extractMerchantFromScanNodes(nodes))
+    }
+
+    @Test
+    fun scan_merchant_skips_money_and_buttons() {
+        val nodes = listOf("支付成功", "￥32.00", "完成", "支付方式", "星巴克")
+        assertEquals("星巴克", TransactionParser.extractMerchantFromScanNodes(nodes))
+    }
+
+    @Test
+    fun scan_merchant_without_anchor_is_null() {
+        assertNull(TransactionParser.extractMerchantFromScanNodes(listOf("星巴克", "￥32.00")))
+    }
+
+    @Test
+    fun scan_merchant_ignores_pure_symbol() {
+        val nodes = listOf("支付成功", "···", "老王面馆", "¥12.00")
+        assertEquals("老王面馆", TransactionParser.extractMerchantFromScanNodes(nodes))
+    }
+
+    @Test
+    fun folded_wechat_notification_parsed() {
+        // 折叠通知正文只有一行「[2条] 微信支付: ¥18.00」，没有动词
+        val r = TransactionParser.parse("com.tencent.mm", "微信支付", listOf("[2条] 微信支付: ¥18.00"))
+        assertNotNull(r); r!!
+        assertEquals(1800L, r.amountCents)
+        assertEquals(TxType.EXPENSE, r.type)
+    }
+
+    @Test
+    fun folded_notification_with_bill_words_is_rejected() {
+        // 同样简短，但提到「账单」→ 不能当支出
+        val r = TransactionParser.parse("com.tencent.mm", "微信支付", listOf("本月账单 1234.00 元"))
+        assertNull(r)
+    }
+
+    @Test
+    fun wechat_pay_long_notification_unaffected() {
+        // 正常微信支付服务号通知（走关键词，不靠兜底）
+        val r = TransactionParser.parse("com.tencent.mm", "微信支付", listOf("微信支付凭证", "付款金额 ¥36.00"))
+        assertNotNull(r); r!!
+        assertEquals(3600L, r.amountCents)
+    }
 }
