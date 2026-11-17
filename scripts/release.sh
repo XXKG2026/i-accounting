@@ -19,18 +19,18 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$REPO_DIR"
+cd "${REPO_DIR}"
 
 VERSION="${1:-}"
 NOTE="${2:-}"
 
-if [ -z "$VERSION" ] || [ -z "$NOTE" ]; then
+if [ -z "${VERSION}" ] || [ -z "${NOTE}" ]; then
   echo "用法: ./scripts/release.sh <版本号> <更新说明>"
   echo "例:   ./scripts/release.sh 2.5 \"修复提现方向判定\""
   exit 1
 fi
 
-echo "==> 版本 $VERSION"
+echo "==> 版本 ${VERSION}"
 
 # 1. 工作区检查
 if [ -n "$(git status --porcelain)" ]; then
@@ -39,32 +39,32 @@ if [ -n "$(git status --porcelain)" ]; then
   exit 1
 fi
 
-if git rev-parse "v$VERSION" >/dev/null 2>&1; then
-  echo "✗ 标签 v$VERSION 已存在"
+if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+  echo "✗ 标签 v${VERSION} 已存在"
   exit 1
 fi
 
 # 2. 版本号
 GRADLE="app/build.gradle.kts"
-OLD_CODE=$(grep -E '^\s*versionCode = ' "$GRADLE" | grep -oE '[0-9]+')
-OLD_NAME=$(grep -E '^\s*versionName = ' "$GRADLE" | grep -oE '"[^"]+"' | tr -d '"')
+OLD_CODE=$(grep -E '^\s*versionCode = ' "${GRADLE}" | grep -oE '[0-9]+')
+OLD_NAME=$(grep -E '^\s*versionName = ' "${GRADLE}" | grep -oE '"[^"]+"' | tr -d '"')
 NEW_CODE=$((OLD_CODE + 1))
 
-echo "   versionCode $OLD_CODE → $NEW_CODE"
-echo "   versionName $OLD_NAME → $VERSION"
+echo "   versionCode ${OLD_CODE} → ${NEW_CODE}"
+echo "   versionName ${OLD_NAME} → ${VERSION}"
 
-sed -i '' "s/versionCode = $OLD_CODE$/versionCode = $NEW_CODE/" "$GRADLE"
-sed -i '' "s/versionName = \"$OLD_NAME\"$/versionName = \"$VERSION\"/" "$GRADLE"
+sed -i '' "s/versionCode = ${OLD_CODE}$/versionCode = ${NEW_CODE}/" "${GRADLE}"
+sed -i '' "s/versionName = \"${OLD_NAME}\"$/versionName = \"${VERSION}\"/" "${GRADLE}"
 
 # 3. 构建 + 测试
 export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@21}"
-export ANDROID_HOME="${ANDROID_HOME:-$HOME/Android/sdk}"
+export ANDROID_HOME="${ANDROID_HOME:-${HOME}/Android/sdk}"
 
 echo "==> 编译与测试（这一步最慢）"
 if ! ./gradlew assembleDebug testDebugUnitTest --no-daemon > /tmp/release_build.log 2>&1; then
   echo "✗ 编译或测试失败，已回滚版本号。看 /tmp/release_build.log"
-  sed -i '' "s/versionCode = $NEW_CODE$/versionCode = $OLD_CODE/" "$GRADLE"
-  sed -i '' "s/versionName = \"$VERSION\"$/versionName = \"$OLD_NAME\"/" "$GRADLE"
+  sed -i '' "s/versionCode = ${NEW_CODE}$/versionCode = ${OLD_CODE}/" "${GRADLE}"
+  sed -i '' "s/versionName = \"${VERSION}\"$/versionName = \"${OLD_NAME}\"/" "${GRADLE}"
   exit 1
 fi
 
@@ -73,22 +73,24 @@ import sys, xml.etree.ElementTree as ET
 t = ET.parse('{}').getroot()
 print(f\"{t.get('tests')}/{t.get('tests')} 通过\")
 ")
-echo "   测试: $TESTS"
+echo "   测试: ${TESTS}"
 
 # 4. 打包（英文名，GitHub 会吞中文文件名）
-APK="/tmp/i-accounting-v$VERSION.apk"
-cp app/build/outputs/apk/debug/app-debug.apk "$APK"
-cp "$APK" "$HOME/Downloads/i记账-v$VERSION.apk"
-echo "   APK: $HOME/Downloads/i记账-v$VERSION.apk ($(du -h "$APK" | cut -f1))"
+APK="/tmp/i-accounting-v${VERSION}.apk"
+cp app/build/outputs/apk/debug/app-debug.apk "${APK}"
+# Downloads 不一定存在（新机器/无桌面环境），先确保目录在，否则 cp 会失败并把发版卡在中途
+mkdir -p "${HOME}/Downloads"
+cp "${APK}" "${HOME}/Downloads/i记账-v${VERSION}.apk" 2>/dev/null || true
+echo "   APK: /tmp/i-accounting-v${VERSION}.apk ($(du -h "${APK}" | cut -f1))"
 
 # 5. CHANGELOG
 TODAY=$(date +%Y-%m-%d)
-ENTRY="## [$VERSION] - $TODAY
+ENTRY="## [${VERSION}] - ${TODAY}
 
-$NOTE
+${NOTE}
 
 "
-python3 - "$VERSION" "$ENTRY" <<'PY'
+python3 - "${VERSION}" "${ENTRY}" <<'PY'
 import sys
 ver, entry = sys.argv[1], sys.argv[2]
 p = "CHANGELOG.md"
@@ -105,26 +107,26 @@ PY
 
 # 6. 提交推送
 git add -A
-git commit -q -m "v$VERSION：$NOTE"
+git commit -q -m "v${VERSION}：${NOTE}"
 git push -q origin main
 echo "   已推送 main"
 
 # 7. 标签 + Release
-git tag -f "v$VERSION" -m "v$VERSION：$NOTE"
-git push -f origin "v$VERSION" 2>/dev/null
+git tag -f "v${VERSION}" -m "v${VERSION}：${NOTE}"
+git push -f origin "v${VERSION}" 2>/dev/null
 
-gh release create "v$VERSION" \
-  --title "v$VERSION · $NOTE" \
-  --notes "$NOTE
+gh release create "v${VERSION}" \
+  --title "v${VERSION} · ${NOTE}" \
+  --notes "${NOTE}
 
 ## 安装
-下载下面的 \`i-accounting-v$VERSION.apk\` 直接安装（覆盖安装不会丢数据）。
+下载下面的 \`i-accounting-v${VERSION}.apk\` 直接安装（覆盖安装不会丢数据）。
 
 完整更新记录见 [CHANGELOG.md](https://github.com/XXKG2026/i-accounting/blob/main/CHANGELOG.md)" \
   --latest >/dev/null
 
-gh release upload "v$VERSION" "$APK" --clobber >/dev/null
+gh release upload "v${VERSION}" "${APK}" --clobber >/dev/null
 echo "   Release 已建，APK 已上传"
 
 echo
-echo "✓ 完成：https://github.com/XXKG2026/i-accounting/releases/tag/v$VERSION"
+echo "✓ 完成：https://github.com/XXKG2026/i-accounting/releases/tag/v${VERSION}"
