@@ -66,15 +66,7 @@ class PaymentAccessibilityService : AccessibilityService() {
         collectNodeTexts(root, texts)
         if (texts.isEmpty()) return
 
-        val joined = texts.joinToString(" ")
-
-        // 必须像「付款结果页」：有成功锚点 + 至少一个结果页特征
-        // （只有锚点不够 —— 公众号文章、账单列表里也可能出现「已支付」）
-        if (SUCCESS_ANCHORS.none { joined.contains(it) }) return
-        if (RESULT_PAGE_HINTS.none { joined.contains(it) }) return
-
-        // 明显不是结果页的场景，一律跳过
-        if (HISTORY_PAGE_MARKERS.any { joined.contains(it) }) return
+        if (!isPaymentResultPage(texts)) return
 
         val appName = TransactionParser.APP_NAMES[pkg] ?: "支付"
 
@@ -165,6 +157,25 @@ class PaymentAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "PayAccessibility"
+
+        /**
+         * 这段文本像不像「刚付完款的结果页」。
+         *
+         * 三道闸缺一不可：
+         *   有成功锚点（支付成功/付款成功/已支付/交易成功）
+         *   **且** 有结果页特征（完成 / 订单号 / 支付方式…）
+         *   **且** 没命中账单、聊天、公众号等黑名单
+         *
+         * 为啥要第二道：公众号文章、账单流水里也会出现「已支付」「支付成功」，
+         * 光看锚点会误记账。
+         */
+        internal fun isPaymentResultPage(texts: List<String>): Boolean {
+            if (texts.isEmpty()) return false
+            val joined = texts.joinToString(" ")
+            return SUCCESS_ANCHORS.any { joined.contains(it) } &&
+                RESULT_PAGE_HINTS.any { joined.contains(it) } &&
+                HISTORY_PAGE_MARKERS.none { joined.contains(it) }
+        }
 
         private val SUCCESS_ANCHORS = listOf("支付成功", "付款成功", "已支付", "交易成功")
 
