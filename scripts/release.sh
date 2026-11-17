@@ -68,10 +68,14 @@ if ! ./gradlew assembleDebug testDebugUnitTest --no-daemon > /tmp/release_build.
   exit 1
 fi
 
-TESTS=$(find app/build/test-results -name "*.xml" | head -1 | xargs -I{} python3 -c "
-import sys, xml.etree.ElementTree as ET
-t = ET.parse('{}').getroot()
-print(f\"{t.get('tests')}/{t.get('tests')} 通过\")
+# 汇总所有测试类的 XML —— 只读第一个会把 85 个报成 11 个
+TESTS=$(python3 -c "
+import glob, xml.etree.ElementTree as ET
+tot = fail = err = 0
+for f in glob.glob('app/build/test-results/**/*.xml', recursive=True):
+    t = ET.parse(f).getroot()
+    tot += int(t.get('tests', 0)); fail += int(t.get('failures', 0)); err += int(t.get('errors', 0))
+print(f'{tot} 个测试，{fail} 失败，{err} 错误')
 ")
 echo "   测试: ${TESTS}"
 
