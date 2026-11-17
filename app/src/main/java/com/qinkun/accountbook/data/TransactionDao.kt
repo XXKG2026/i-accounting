@@ -104,6 +104,25 @@ interface TransactionDao {
     )
     suspend fun frequentMerchants(limit: Int = 12): List<String>
 
+    /**
+     * 商户分类记忆：这个商户以前被分到过哪一类，就沿用哪一类。
+     *
+     * 为什么要它：像「天外山」这种供应商名字，词库里不可能有，只能靠
+     * 主人手动改一次来教。查的是历史流水里该商户出现最多的分类，
+     * 手动改过的记录本身就是"教学样本"。
+     *
+     * 排除「其他」：那是兜底的默认值，不是主人主动选的。
+     */
+    @Query(
+        """SELECT category FROM transactions
+           WHERE merchant = :merchant AND category != '' AND category != '其他'
+             AND sourceApp != '手动'
+           GROUP BY category
+           ORDER BY COUNT(*) DESC, MAX(occurredAt) DESC
+           LIMIT 1"""
+    )
+    suspend fun learnedCategory(merchant: String): String?
+
     /** 最后一条记账的时间 —— 判断"这次离开支付 App 之后有没有已经记上" */
     @Query("SELECT MAX(occurredAt) FROM transactions")
     suspend fun lastTxAt(): Long?

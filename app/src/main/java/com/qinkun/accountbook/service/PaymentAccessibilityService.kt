@@ -93,9 +93,10 @@ class PaymentAccessibilityService : AccessibilityService() {
 
         scope.launch {
             runCatching {
-                val category = TransactionParser.guessCategory(
-                    parsed.sourceApp, parsed.merchant, parsed.rawText, parsed.type
-                )
+                val category = repo.learnedCategory(parsed.merchant)
+                    ?: TransactionParser.guessCategory(
+                        parsed.sourceApp, parsed.merchant, parsed.rawText, parsed.type
+                    )
                 val id = repo.addIfNew(
                     Transaction(
                         amountCents = parsed.amountCents,

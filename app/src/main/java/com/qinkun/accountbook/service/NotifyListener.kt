@@ -70,9 +70,12 @@ class NotifyListener : NotificationListenerService() {
                     return@launch
                 }
 
-                val category = TransactionParser.guessCategory(
-                    parsed.sourceApp, parsed.merchant, parsed.rawText, parsed.type
-                )
+                // 先看这个商户以前被教过什么分类，没教过才走规则猜。
+                // 「天外山」这种供应商名字，词库永远猜不对，靠主人改一次记住。
+                val category = repo.learnedCategory(parsed.merchant)
+                    ?: TransactionParser.guessCategory(
+                        parsed.sourceApp, parsed.merchant, parsed.rawText, parsed.type
+                    )
                 val id = repo.addIfNew(
                     Transaction(
                         amountCents = parsed.amountCents,

@@ -27,6 +27,10 @@ class Repo(context: Context) {
 
     suspend fun lastTxAt(): Long? = dao.lastTxAt()
 
+    /** 商户→分类的记忆；null 表示这个商户还没被教过 */
+    suspend fun learnedCategory(merchant: String): String? =
+        if (merchant.isBlank()) null else dao.learnedCategory(merchant)
+
     // ---- 补录辅助 ----
     suspend fun frequentMerchants(limit: Int = 12): List<String> = dao.frequentMerchants(limit)
     suspend fun recentCategories(type: TxType, since: Long): List<String> = dao.recentCategories(type, since)
