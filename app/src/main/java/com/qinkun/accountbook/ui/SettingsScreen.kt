@@ -370,7 +370,13 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
             Column(Modifier.padding(16.dp)) {
                 Text("关于", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = AppColor.ink)
                 Spacer(Modifier.height(8.dp))
-                Text("i记账 v1.9", fontSize = 13.sp, color = AppColor.inkSoft)
+                // 版本号一律从 PackageManager 读 —— 硬编码会跟实际安装包对不上（历史遗留 v1.9）
+                val appVersion = remember {
+                    val c = AppContextHolder.ctx
+                    runCatching { c?.packageManager?.getPackageInfo(c.packageName, 0)?.versionName }
+                        .getOrNull() ?: "?"
+                }
+                Text("i记账 v${appVersion}", fontSize = 13.sp, color = AppColor.inkSoft)
                 Text("数据全部存在本机，不联网、不上传", fontSize = 12.sp, color = AppColor.inkSoft)
             }
         }

@@ -95,6 +95,65 @@ object TransactionParser {
         "优惠券", "消费券", "立减", "随机立减", "满减", "满赠", "红包奖励",
     )
 
+    /** 泛化通知标题：它们不是商户名，直接当 merchant 会把分类带偏 */
+    private val GENERIC_TITLES = listOf(
+        "交易提醒", "支付助手", "收钱提醒助手正在为您服务", "服务通知", "通知",
+        "支付宝", "微信", "微信支付", "云闪付",
+    )
+
+    /** 句读切分：营销句常以逗号/句号挂在交易主句后面 */
+    private val SENTENCE_SPLIT = Regex("""[，,。;；!！\n]""")
+
+    /**
+     * 把「营销句」从通知文本里剥掉，而不是整条丢弃。
+     *
+     * 实测形态：「你有一笔18.90元的支出，点击领取2个支付宝积分。」
+     * 句①是真交易，句②是广告尾巴。旧逻辑命中「领取」即整条 return null
+     * → 真支出被误杀（实测漏记 18.90 元）。
+     *
+     * 做法：按标点切句，命中营销词的句子删掉，剩下的拼回去继续解析；
+     * 金额也只从交易句里取，营销句里的「领1元红包」不会污染金额。
+     */
+    fun stripMarketingSentences(text: String): String {
+        if (MARKETING_MARKERS.none { text.contains(it) }) return text
+        val kept = text.split(SENTENCE_SPLIT).filterNot { isMarketingSentence(it) }
+        return kept.joinToString("，").trim()
+    }
+
+    /** 交易动词 / 金额外观，用来识别「交易主句」 */
+    private val TRADE_VERB = Regex("""支出|支付|付款|消费|收款|转账|退款""")
+    private val AMOUNT_LIKE = Regex("""[¥￥]\s*[0-9]|[0-9]+(\.[0-9]{1,2})?\s*元""")
+
+    /**
+     * 「支付宝」里含「支付」、「微信支付」里含「支付」—— 测交易动词前必须先把这些词抹掉，
+     * 否则「支付宝 恭喜获得 5 元红包奖励」会被当成交易主句放行（实测踩过）。
+     */
+    private val VERB_NOISE = listOf("支付宝", "微信支付", "云闪付", "支付助手", "付款码", "收款码")
+
+    private fun hasTradeStatement(seg: String): Boolean {
+        var t = seg
+        VERB_NOISE.forEach { t = t.replace(it, "") }
+        return TRADE_VERB.containsMatchIn(t) && AMOUNT_LIKE.containsMatchIn(t)
+    }
+
+    /**
+     * 判断「单个句子」是不是纯营销句 —— 只有它才该被删。
+     *
+     * 三条豁免（任一成立即保留整句）：
+     *   1. 含成交确认词（「实付」「支付成功」）—— 「使用优惠券后实付 20 元」是真交易
+     *   2. 同时含交易动词和金额 —— 「你有一笔18.90元的支出」是真支出
+     *   3. 不含营销词 —— 根本不参与判断
+     *
+     * 只有「命中营销词、又不带成交确认、也不是交易主句」的句子才是广告尾巴，例如
+     * 「点击领取2个支付宝积分」「领1元生活缴费红包」。
+     */
+    private fun isMarketingSentence(seg: String): Boolean {
+        if (MARKETING_MARKERS.none { seg.contains(it) }) return false
+        if (DEAL_CONFIRM.any { seg.contains(it) }) return false
+        if (hasTradeStatement(seg)) return false
+        return true
+    }
+
     /**
      * 金额正则，严格按语义优先级排列。
      * 第一优先：实付/支付/付款/收款/到账/金额 这类词后面的数字（最可信）
@@ -156,13 +215,16 @@ object TransactionParser {
         val blob = (listOf(title) + texts).joinToString(" ").replace("\u00A0", " ").trim()
         if (blob.isBlank()) { onFail("通知内容为空"); return null }
 
+        // 营销句剥离后的正文：后续所有判定都用它，rawText 仍保留原文
+        val body = stripMarketingSentences(blob)
+
         // 排除
-        val hitExclude = EXCLUDE_WORDS.firstOrNull { blob.contains(it) }
+        val hitExclude = EXCLUDE_WORDS.firstOrNull { body.contains(it) }
         if (hitExclude != null) { onFail("命中排除词「$hitExclude」"); return null }
 
         // 「向 XXX 转账」是明确的转出；「向你转账」是别人转给我，不算
-        val transferOut = Regex("""向.{1,20}?转账""").containsMatchIn(blob) &&
-                !blob.contains("向你转账")
+        val transferOut = Regex("""向.{1,20}?转账""").containsMatchIn(body) &&
+                !body.contains("向你转账")
 
         // 少数极简通知只有「微信支付 / ¥18.00」这种，没有任何动词。
         // 兜底认成支出，但前置条件卡得很死（见 shortPayHint），宁可漏记也不误记。
@@ -170,16 +232,16 @@ object TransactionParser {
             (pkg == "com.tencent.mm" || pkg == "com.eg.android.AlipayGphone") &&
                 (title.contains("微信支付") || title.contains("支付宝") || title.contains("i记账 支付成功")) &&
                 texts.size <= 3 &&
-                EXCLUDE_WORDS.none { blob.contains(it) } &&
+                EXCLUDE_WORDS.none { body.contains(it) } &&
                 listOf("账单", "明细", "余额", "额度", "还款", "收益", "理财", "积分", "退款").none {
-                    blob.contains(it)
+                    body.contains(it)
                 }
 
-        val hasExpense = EXPENSE_WORDS.any { blob.contains(it) } || transferOut || shortPayHint
-        val hasIncome = INCOME_WORDS.any { blob.contains(it) }
+        val hasExpense = EXPENSE_WORDS.any { body.contains(it) } || transferOut || shortPayHint
+        val hasIncome = INCOME_WORDS.any { body.contains(it) }
         if (!hasExpense && !hasIncome) { onFail("没找到支付/收款关键词"); return null }
 
-        val cents = extractCents(blob)
+        val cents = extractCents(body)
         if (cents == null) { onFail("没找到金额"); return null }
         if (cents <= 0L || cents > 100_000_000L) { onFail("金额异常（$cents 分）"); return null }
 
@@ -189,26 +251,22 @@ object TransactionParser {
         //   转出  —— 「向 XX 转账」不带「收到」
         // 其余同时命中时以收入为准（"退款成功" 通常也含"支付"）
         val type = when {
-            blob.contains("提现") &&
-                !listOf("收到转账", "向你转账").any { blob.contains(it) } -> TxType.EXPENSE
+            body.contains("提现") &&
+                !listOf("收到转账", "向你转账").any { body.contains(it) } -> TxType.EXPENSE
 
-            listOf("充值成功", "已充值").any { blob.contains(it) } -> TxType.EXPENSE
+            listOf("充值成功", "已充值").any { body.contains(it) } -> TxType.EXPENSE
 
             hasIncome -> TxType.INCOME
             else -> TxType.EXPENSE
         }
 
-        // 广告通知过滤：像广告、又没有成交确认 → 不记账
-        // 收入侧只过滤「红包奖励」这类纯营销文案，其余不动（红包入账是真钱）
-        if (type == TxType.EXPENSE) {
-            val adWord = MARKETING_MARKERS.firstOrNull { blob.contains(it) }
-            val confirmed = DEAL_CONFIRM.any { blob.contains(it) }
-            if (adWord != null && !confirmed) { onFail("疑似广告（含「$adWord」且无成交确认词）"); return null }
-        } else {
-            if (listOf("红包奖励", "奖励金", "返利券", "优惠券").any { blob.contains(it) } &&
-                !listOf("红包到账", "红包收入", "转入", "收到红包").any { blob.contains(it) }
-            ) { onFail("疑似营销奖励文案"); return null }
-        }
+        // 营销过滤：营销句已在 body 阶段剥离，这里只兜「整条都是广告」的情况。
+        // 收入侧维持原逻辑：只拦「红包奖励」这类纯营销文案（红包入账是真钱）。
+        if (body.isBlank()) { onFail("整条都是营销文案（已剥离）"); return null }
+        if (type == TxType.INCOME &&
+            listOf("红包奖励", "奖励金", "返利券", "优惠券").any { body.contains(it) } &&
+            !listOf("红包到账", "红包收入", "转入", "收到红包").any { body.contains(it) }
+        ) { onFail("疑似营销奖励文案"); return null }
 
         // 商户名：先取标题（去掉 App 名和前后标点）
         val fromTitle = title
@@ -218,10 +276,15 @@ object TransactionParser {
             .replace(Regex("[\\s:：\\-—|]+$"), "")
             .take(40)
 
+        // 标题是「交易提醒」这类泛化词时它不构成商户名 —— 宁可标未识别，也别把分类带偏
         // 标题给不出商户（空 / 只有 App 名）时，回到正文里找
-        val merchant = if (fromTitle.isBlank() || fromTitle == app) {
-            extractMerchantFromBody(blob) ?: app
-        } else fromTitle
+        val merchant = when {
+            fromTitle in GENERIC_TITLES ->
+                extractMerchantFromBody(body) ?: "$app（未识别商户）"
+            fromTitle.isBlank() || fromTitle == app ->
+                extractMerchantFromBody(body) ?: app
+            else -> fromTitle
+        }
 
         return Parsed(cents, type, app, merchant, blob)
     }

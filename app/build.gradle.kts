@@ -13,8 +13,8 @@ android {
         applicationId = "com.qinkun.accountbook"
         minSdk = 31
         targetSdk = 36
-        versionCode = 16
-        versionName = "2.8"
+        versionCode = 17
+        versionName = "2.9"
     }
 
     buildTypes {

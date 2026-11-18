@@ -281,10 +281,43 @@ class TransactionParserTest {
     // ========== 第四批：广告过滤 / 脱敏 / 打分分类 ==========
 
     @Test
-    fun ad_notification_is_dropped() {
-        // 支付宝典型的诱导广告，含金额、含"支出"，绝不能记账
+    fun marketing_tail_keeps_real_expense() {
+        // 旧逻辑：命中「领」即整条丢弃 → 真支出被误杀。
+        // 新逻辑：只剥掉营销句，交易句照记，金额也只从交易句取
         val r = p("com.eg.android.AlipayGphone", "支付宝",
             "你有一笔0.08元的支出，领1元生活缴费红包。")
+        assertNotNull(r)
+        assertEquals(8L, r!!.amountCents)
+        assertEquals(com.qinkun.accountbook.data.TxType.EXPENSE, r!!.type)
+    }
+
+    @Test
+    fun taobao_shangou_expense_with_marketing_tail_recorded() {
+        // 实机漏记复现：淘宝闪购经支付宝付款，通知带「点击领取」尾巴
+        // 旧逻辑把它当广告扔掉 → 18.90 元没进账
+        val r = p("com.eg.android.AlipayGphone", "交易提醒",
+            "你有一笔18.90元的支出，点击领取2个支付宝积分。")
+        assertNotNull(r)
+        assertEquals(1890L, r!!.amountCents)
+        assertEquals(com.qinkun.accountbook.data.TxType.EXPENSE, r!!.type)
+        // 营销句里的「2个」不能污染金额
+        assertTrue(r!!.rawText.contains("18.90"))
+    }
+
+    @Test
+    fun generic_title_becomes_unknown_merchant() {
+        // 「交易提醒」是泛化标题，不该当商户名（否则分类被带成「其他」）
+        val r = p("com.eg.android.AlipayGphone", "交易提醒",
+            "你有一笔18.90元的支出")
+        assertNotNull(r)
+        assertTrue(r!!.merchant.contains("未识别"))
+    }
+
+    @Test
+    fun pure_marketing_sentences_dropped() {
+        // 整条都是营销，剥完什么都不剩 → 仍然丢弃
+        val r = p("com.eg.android.AlipayGphone", "支付宝",
+            "限时优惠券已到账，点击领取，满100减20")
         assertNull(r)
     }
 
@@ -603,9 +636,13 @@ class TransactionParserTest {
     }
 
     @Test
-    fun ad_with_tiny_amount_still_dropped() {
+    fun tiny_amount_expense_is_kept_after_rule_change() {
+        // 语义变更：过去命中营销词就整条丢弃 → 真支出漏记。
+        // 现在只删营销句，交易主句照记（0.08 元确实是真扣款）
         val r = p("com.eg.android.AlipayGphone", "支付宝", "你有一笔0.08元的支出，领1元生活缴费红包")
-        assertNull(r)
+        assertNotNull(r); r!!
+        assertEquals(8L, r.amountCents)
+        assertEquals(TxType.EXPENSE, r.type)
     }
 
     // ---------- 回归：余额不被当金额 ----------

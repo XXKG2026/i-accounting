@@ -56,6 +56,17 @@ echo "   versionName ${OLD_NAME} → ${VERSION}"
 sed -i '' "s/versionCode = ${OLD_CODE}$/versionCode = ${NEW_CODE}/" "${GRADLE}"
 sed -i '' "s/versionName = \"${OLD_NAME}\"$/versionName = \"${VERSION}\"/" "${GRADLE}"
 
+# 2.5 版本号一致性守卫：源码里禁止硬编码「i记账 vX.Y」
+# （关于页曾硬编码 v1.9，而实际安装包是 2.8，主人看不到真实版本）
+HARDCODED=$(grep -rnE 'i记账 v[0-9]' app/src/main/java 2>/dev/null || true)
+if [ -n "${HARDCODED}" ]; then
+  echo "✗ 源码里还有硬编码版本号（关于页必须从 PackageManager 读）:"
+  echo "${HARDCODED}"
+  sed -i '' "s/versionCode = ${NEW_CODE}$/versionCode = ${OLD_CODE}/" "${GRADLE}"
+  sed -i '' "s/versionName = \"${VERSION}\"$/versionName = \"${OLD_NAME}\"/" "${GRADLE}"
+  exit 1
+fi
+
 # 3. 构建 + 测试
 export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@21}"
 export ANDROID_HOME="${ANDROID_HOME:-${HOME}/Android/sdk}"
