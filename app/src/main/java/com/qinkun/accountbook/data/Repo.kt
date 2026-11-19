@@ -94,15 +94,29 @@ class Repo(context: Context) {
             }
         }
 
+        /** 当天最后一毫秒（23:59:59.999） */
+        private fun endOfDay(now: Long): Long {
+            val c = Calendar.getInstance().apply { timeInMillis = now }
+            c.set(Calendar.HOUR_OF_DAY, 23)
+            c.set(Calendar.MINUTE, 59)
+            c.set(Calendar.SECOND, 59)
+            c.set(Calendar.MILLISECOND, 999)
+            return c.timeInMillis
+        }
+
         /**
-         * 统计用的区间：翻到还没到的周期（比如 2027 年）时给一个空区间。
+         * 统计用的区间：**没走完的周期只算到今天为止**。
          *
-         * 为什么不直接把上界压到「现在」：`rangeFlow` 只在切换周期或跨天时重算，
-         * 上界一旦定死成某一刻，那一刻之后新记的账就会被挡在统计之外 ——
-         * 下午记的账晚上看不见，比空页面更糟。
+         * 比如现在 2026-11-19：
+         *   · 2026 年 → 1 月 1 日 ~ 11 月 19 日（不是 12 月 31 日）
+         *   · 本月   → 11 月 1 日 ~ 11 月 19 日
+         *   · 2027 年 → 起点已经在未来，给空区间，显示 0
+         *   · 2025 年 → 已经过完，整年照算
          *
-         * 所以只堵「整段都在未来」这种情况：区间起点已经晚于现在，
-         * 说明这一年/月/日还没开始，本来就该是 0。
+         * 上界取「今天 23:59:59」而不是「此刻」：`rangeFlow` 只在切换周期
+         * 或跨天时重算，上界要是定死成某一刻，那一刻之后新记的账就永远
+         * 进不了统计 —— 下午记的账晚上看不见，比空页面更糟。
+         * 取到当天结束，今天全天都算，跨天时 tick 会自然重算。
          */
         fun rangeForStats(
             period: Period,
@@ -110,7 +124,10 @@ class Repo(context: Context) {
             now: Long = System.currentTimeMillis(),
         ): Pair<Long, Long> {
             val (from, to) = rangeFor(period, offset, now)
-            return if (from > now) now to now - 1 else from to to
+            // 整段都在未来（比如 2027 年）：还没发生，就是空
+            if (from > now) return now to now - 1
+            // 没走完的周期：去掉「未来那段」
+            return from to minOf(to, endOfDay(now))
         }
 
         /** 区间的人类可读标题，如「2026 年 11 月」「11 月 10 日 — 11 月 16 日」 */
