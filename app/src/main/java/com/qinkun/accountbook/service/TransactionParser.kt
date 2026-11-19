@@ -47,8 +47,9 @@ object TransactionParser {
         "提现",
         // 打赏：直播/内容平台的典型支出，文案往往只有「打赏 10 元」
         "打赏",
-        // 代付/帮付：钱一定是我出的，且有「成功」字样的多是已完成
-        "代付", "帮付", "代付款", "为他人付款"
+        // 代付/帮付：钱一定是我出的。但**不能写裸「代付」**——银联体系里
+        // 「代付交易」「银联代付」是企业给个人打钱（工资），方向正好相反。
+        "好友代付", "为TA代付", "帮付", "代付款", "为他人付款"
     )
 
     /** 收入关键词 */
@@ -283,9 +284,22 @@ object TransactionParser {
                     body.contains(it)
                 }
 
+        // 银行专用说法：既不含「收款」也不含「消费」的裸词，靠下面两张表兜不住，
+        // 必须提前定义，否则会在这里被当成「没找到关键词」直接丢掉。
+        // ② 银行退款说「消费退货入账」「冲正」，不说「退款成功」
+        val bankRefund = listOf("退货入账", "消费退货", "支付退款", "冲正")
+            .any { body.contains(it) }
+
+        // 银联「代付」= 企业给个人打钱（工资、报销、平台结算），方向是**收入**，
+        // 和消费场景的「好友代付」正好相反
+        val bankPayroll = listOf("代付交易", "银联代付", "批量代付", "代发工资", "工资代发")
+            .any { body.contains(it) }
+
         val hasExpense = EXPENSE_WORDS.any { body.contains(it) } || transferOut || shortPayHint
         val hasIncome = INCOME_WORDS.any { body.contains(it) }
-        if (!hasExpense && !hasIncome) { onFail("没找到支付/收款关键词"); return null }
+        if (!hasExpense && !hasIncome && !bankRefund && !bankPayroll) {
+            onFail("没找到支付/收款关键词"); return null
+        }
 
         val cents = extractCents(body)
         if (cents == null) { onFail("没找到金额"); return null }
@@ -301,7 +315,10 @@ object TransactionParser {
         // 只靠 hasIncome 的话会被 expense 词抢走方向。
         // 代付：钱是我出的。但必须排除「张三代付成功，你已收款 50 元」这种
         // 别人替我付、我收钱的场景 —— 出现收入信号就不算我出钱。
-        val proxyPay = listOf("代付", "帮付", "代付款", "为他人付款").any { body.contains(it) } &&
+        // ⚠️ 裸「代付」不能用：银联体系里「代付」是企业给个人打钱（工资），
+        // 「完成代付交易 8500 元」是收入。只认消费场景的明确词。
+        val proxyPay = listOf("帮付", "代付款", "好友代付", "亲情卡", "亲密付", "为他人付款")
+            .any { body.contains(it) } &&
             listOf("你已收款", "收款成功", "已收款", "到账", "入账", "收到转账", "转账给你")
                 .none { body.contains(it) }
 
@@ -312,8 +329,23 @@ object TransactionParser {
             // DeepSeek 复核补充：这些说法之前都没显式覆盖，全靠 hasIncome 兜底，
             // 而兜底会被 expense 词抢走方向
             "退款到账", "收款到账", "红包已存入", "已存入零钱",
-            "AA收款", "AA 收款", "群收款", "转账给你", "还给你",
+            // ⚠️ 不要写裸「群收款/AA收款」：我作为付款方时文案是
+            // 「群收款支付成功 ¥50」，同样命中，会被强制判成收入。
+            "收到群收款", "群收款已到账", "收到AA收款", "收到 AA 收款",
+            "转账给你", "还给你",
         ).any { body.contains(it) }
+
+        // ③ 付款回执里的状态说明，不是我真的收到钱：
+        // 「已为你自动扣款 50 元，商户已收款」里就有「已收款」。
+        val payReceiptNoise = listOf("对方已收款", "商户已收款", "商家已收款")
+            .any { body.contains(it) }
+
+        // ⑤ 还信用卡是支出，不能被「已入账」骗成收入（否则账本虚增一倍）
+        val repayNoise = body.contains("还款") &&
+            listOf("退款", "退货", "冲正").none { body.contains(it) }
+
+
+        val incomeReally = incomeStrong && !payReceiptNoise && !repayNoise
 
         // 「提现」必须带动作词才作数。
         // 线上事故：收入通知「你已成功收款198.00元. 已转入余额 做生意收钱提现免费>>」
@@ -327,7 +359,17 @@ object TransactionParser {
 
             // 收入强信号优先级最高：「你已成功收款」这种明确到不能再明确，
             // 不能被营销尾巴里的任何词推翻。
-            incomeStrong -> TxType.INCOME
+            // 付款回执（「商户已收款」）/ 还信用卡：明确是出钱，
+            // 必须在 hasIncome 兜底之前拦下，否则「已收款」「已入账」会把它翻成收入
+            payReceiptNoise || repayNoise -> TxType.EXPENSE
+
+            incomeReally -> TxType.INCOME
+
+            // 银行退货/冲正：文案常同时含「消费/支付」，必须压过 expense 判定
+            bankRefund -> TxType.INCOME
+
+            // 银行代付 = 工资/报销到账
+            bankPayroll -> TxType.INCOME
 
             // 真提现：钱出去（「提现成功，已转入银行卡」含「转入」但方向是出）
             withdrawReal -> TxType.EXPENSE

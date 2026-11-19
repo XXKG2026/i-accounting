@@ -1001,7 +1001,8 @@ class TransactionParserTest {
     @Test
     fun group_collection_is_income() {
         val r = TransactionParser.parse(
-            "com.tencent.mm", "微信支付", listOf("群收款 50.00 元")
+            // 裸「群收款」是双向词（我发起 / 我付款），只认明确收到的说法
+            "com.tencent.mm", "微信支付", listOf("收到群收款 50.00 元")
         )
         assertNotNull(r)
         assertEquals(TxType.INCOME, r!!.type)
@@ -1031,5 +1032,82 @@ class TransactionParserTest {
             "支付宝", "粮油店", "支付成功 小米 5 斤 20.00 元", TxType.EXPENSE
         )
         assertNotEquals("数码", c)
+    }
+
+    // ============================================================
+    //  Gemini 4 Argon 审查（4 个真 bug）
+    // ============================================================
+
+    @Test
+    fun group_collection_as_payer_is_expense() {
+        // 我是付款方：「群收款支付成功 ¥50」不能因为含「群收款」就判收入
+        val r = TransactionParser.parse(
+            "com.tencent.mm", "微信支付", listOf("群收款支付成功 ¥50.00")
+        )
+        assertNotNull(r)
+        assertEquals(TxType.EXPENSE, r!!.type)
+    }
+
+    @Test
+    fun group_collection_as_receiver_is_income() {
+        val r = TransactionParser.parse(
+            "com.tencent.mm", "微信支付", listOf("你收到群收款 50.00 元，已存入零钱")
+        )
+        assertNotNull(r)
+        assertEquals(TxType.INCOME, r!!.type)
+    }
+
+    @Test
+    fun bank_return_goods_is_income() {
+        // 银行短信不会说「退款成功」，说「消费退货入账」
+        val r = TransactionParser.parse(
+            // 包名用名单内的：银行 App 不在监听白名单是**正确行为**，
+            // 但银行风格的文案会通过支付宝/微信的通知进来
+            "com.eg.android.AlipayGphone", "支付宝",
+            listOf("您尾号1234卡消费退货入账150.00元，余额2000.00元")
+        )
+        assertNotNull(r)
+        assertEquals(TxType.INCOME, r!!.type)
+    }
+
+    @Test
+    fun merchant_already_received_is_still_expense() {
+        // 「商户已收款」出现在我付款的回执里，含「已收款」也不能判成收入
+        val r = TransactionParser.parse(
+            "com.tencent.mm", "微信支付", listOf("已为你自动扣款50.00元，商户已收款")
+        )
+        assertNotNull(r)
+        assertEquals(TxType.EXPENSE, r!!.type)
+    }
+
+    @Test
+    fun bank_payroll_via_daifu_is_income() {
+        // 银联体系里「代付」是企业给个人打钱（工资）
+        val r = TransactionParser.parse(
+            "com.eg.android.AlipayGphone", "支付宝",
+            listOf("您尾号1234账户完成代付交易人民币8500.00元，余额10200.00元")
+        )
+        assertNotNull(r)
+        assertEquals(TxType.INCOME, r!!.type)
+    }
+
+    @Test
+    fun credit_card_repayment_is_expense() {
+        // 还了 5000 块，账本不能反而多 5000 收入
+        val r = TransactionParser.parse(
+            "com.tencent.mm", "微信支付", listOf("信用卡还款已入账，还款金额5000.00元")
+        )
+        assertNotNull(r)
+        assertEquals(TxType.EXPENSE, r!!.type)
+    }
+
+    @Test
+    fun friend_proxy_pay_for_me_via_qinqika() {
+        // 亲情卡是家人替我付，我这边是支出（钱从我的额度走）
+        val r = TransactionParser.parse(
+            "com.eg.android.AlipayGphone", "支付宝", listOf("亲情卡消费成功 68.00 元")
+        )
+        assertNotNull(r)
+        assertEquals(TxType.EXPENSE, r!!.type)
     }
 }
