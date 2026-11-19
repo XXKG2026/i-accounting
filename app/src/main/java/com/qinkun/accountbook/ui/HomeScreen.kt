@@ -58,6 +58,8 @@ fun HomeScreen(vm: MainViewModel, modifier: Modifier = Modifier, openAdd: androi
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     LaunchedEffect(lifecycleOwner) {
         lifecycleOwner.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
+            // 每次回到前台先确认日期有没有变（后台过夜的情况）
+            vm.onForeground()
             autoOk = runCatching {
                 NotificationManagerCompat.getEnabledListenerPackages(ctx).contains(ctx.packageName)
             }.getOrDefault(true)
@@ -135,6 +137,16 @@ fun HomeScreen(vm: MainViewModel, modifier: Modifier = Modifier, openAdd: androi
                         onClick = { vm.setPeriod(p) },
                         label = { Text(p.label, fontSize = 12.sp) }
                     )
+                }
+                // 翻到别的日期后才有意义，平时不占地方
+                if (ps.period != Period.DAY || ps.offset != 0) {
+                    Spacer(Modifier.weight(1f))
+                    TextButton(
+                        onClick = { vm.backToToday() },
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+                    ) {
+                        Text("回今天", fontSize = 12.sp, color = AppColor.accent)
+                    }
                 }
             }
 
