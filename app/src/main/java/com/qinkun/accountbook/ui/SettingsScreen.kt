@@ -27,6 +27,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import com.qinkun.accountbook.AppContextHolder
+import com.qinkun.accountbook.data.Backup
 import com.qinkun.accountbook.data.CaptureLog
 import com.qinkun.accountbook.data.Repo
 import kotlinx.coroutines.flow.first
@@ -61,6 +62,34 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     }
     var showLogs by remember { mutableStateOf(false) }
     var logs by remember { mutableStateOf<List<CaptureLog>>(emptyList()) }
+
+    // 导入导出：走系统文件选择器，不申请任何存储权限
+    var ioTip by remember { mutableStateOf<String?>(null) }
+    val ioScope = rememberCoroutineScope()
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/csv")
+    ) { uri ->
+        if (uri != null) {
+            ioScope.launch {
+                ioTip = "正在导出…"
+                ioTip = runCatching { Backup.exportCsv(ctx, uri) }
+                    .fold({ "已导出 $it 条流水" }, { "导出失败：${it.message}" })
+            }
+        }
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            ioScope.launch {
+                ioTip = "正在导入…"
+                ioTip = runCatching { Backup.importCsv(ctx, uri) }
+                    .fold({ it.message }, { "导入失败：${it.message}" })
+            }
+        }
+    }
     val scope = rememberCoroutineScope()
 
     // Android 13+ 显示常驻通知需要用户授权
@@ -289,6 +318,46 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = AppColor.accent)
                 ) { Text("查看记录", fontSize = 13.sp) }
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+
+        // ---- 数据管理（导入导出）----
+        Card(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = AppColor.surface)
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text("数据管理", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = AppColor.ink)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "导出成 CSV，Excel 和手机表格都能打开。导入时会自动跳过重复的，可以当备份还原用。",
+                    fontSize = 11.sp, color = AppColor.inkSoft
+                )
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(
+                        onClick = {
+                            val name = "i记账-" +
+                                SimpleDateFormat("yyyyMMdd", Locale.CHINA).format(Date()) + ".csv"
+                            exportLauncher.launch(name)
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = AppColor.accent)
+                    ) { Text("导出 CSV", fontSize = 13.sp) }
+                    OutlinedButton(
+                        onClick = {
+                            importLauncher.launch(
+                                arrayOf("text/csv", "text/comma-separated-values", "text/plain", "*/*")
+                            )
+                        }
+                    ) { Text("导入 CSV", fontSize = 13.sp) }
+                }
+                ioTip?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, fontSize = 11.sp, color = AppColor.inkSoft)
+                }
             }
         }
 

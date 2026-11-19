@@ -755,4 +755,138 @@ class TransactionParserTest {
         val raw = "支付宝 支付成功 支付成功￥71.00 天外山 ￥71.00 付款方式 账户余额 完成 回首页"
         assertEquals("其他", TransactionParser.guessCategory("支付宝", "天外山", raw, TxType.EXPENSE))
     }
+
+    // ============================================================
+    //  v2.9 收入被记成支出（线上事故回归）
+    //  根因：INCOME_WORDS 缺了「向你付款」「已入账」等说法，
+    //        hasIncome=false → 一路判成 EXPENSE。
+    // ============================================================
+
+    private fun typeOf(vararg texts: String, title: String = "支付宝",
+                       pkg: String = "com.eg.android.AlipayGphone"): TxType? =
+        TransactionParser.parse(pkg, title, texts.toList())?.type
+
+    @Test
+    fun person_pays_you_is_income() {
+        assertEquals(TxType.INCOME, typeOf("张三向你付款 100.00 元"))
+    }
+
+    @Test
+    fun payment_to_you_is_income() {
+        assertEquals(TxType.INCOME, typeOf("李四 付款给你 50.00 元"))
+    }
+
+    @Test
+    fun already_credited_is_income() {
+        assertEquals(TxType.INCOME, typeOf("已入账 200.00 元"))
+    }
+
+    @Test
+    fun receive_transfer_is_income() {
+        assertEquals(TxType.INCOME, typeOf("你收到一笔转账 88.00 元"))
+    }
+
+    @Test
+    fun receive_money_is_income() {
+        assertEquals(TxType.INCOME, typeOf("已收钱 66.00 元"))
+    }
+
+    // ---- 下面几条是防回归：别为了修收入把支出判反 ----
+
+    @Test
+    fun pay_page_with_payee_label_stays_expense() {
+        // 扫码付款页会写「收款方 天外山」，不能因为contains("收款")就判成收入
+        val r = TransactionParser.parse(
+            "com.eg.android.AlipayGphone", "支付宝 支付成功",
+            listOf("支付成功￥71.00", "天外山", "收款方", "付款方式", "账户余额", "完成")
+        )
+        assertNotNull(r)
+        assertEquals(TxType.EXPENSE, r!!.type)
+    }
+
+    @Test
+    fun normal_payment_stays_expense() {
+        assertEquals(TxType.EXPENSE, typeOf("你有一笔30.40元的支出，点此查看详情。"))
+    }
+
+    @Test
+    fun withdraw_stays_expense() {
+        assertEquals(TxType.EXPENSE, typeOf("提现成功，已转入银行卡 500.00 元"))
+    }
+
+    @Test
+    fun recharge_stays_expense() {
+        assertEquals(TxType.EXPENSE, typeOf("充值成功，已到账 50.00 元"))
+    }
+
+    // ============================================================
+    //  v2.9 收入被判成支出（线上事故 #39）
+    //  正文：你已成功收款198.00元. 已转入余额 做生意收钱提现免费>>
+    //  尾巴里的营销句含「提现」，旧逻辑的「提现」分支压过了收入信号。
+    // ============================================================
+
+    @Test
+    fun income_with_ad_tail_containing_withdraw_is_income() {
+        val r = TransactionParser.parse(
+            "com.eg.android.AlipayGphone",
+            "你已成功收款198.00元.",
+            listOf("已转入余额 做生意收钱提现免费>>")
+        )
+        assertNotNull(r)
+        assertEquals(TxType.INCOME, r!!.type)
+        assertEquals(19800L, r.amountCents)
+    }
+
+    @Test
+    fun income_with_shop_ad_tail_is_income() {
+        // 另一种尾巴：「发起店铺充值活动」里的「充值」也不能把方向带反
+        val r = TransactionParser.parse(
+            "com.eg.android.AlipayGphone", "支付宝",
+            listOf("你已成功收款168.00元（老顾客消费）", "已转入余额", "线上收款支持花呗/信用卡>>")
+        )
+        assertNotNull(r)
+        assertEquals(TxType.INCOME, r!!.type)
+    }
+
+    @Test
+    fun real_withdraw_is_still_expense() {
+        val r = TransactionParser.parse(
+            "com.eg.android.AlipayGphone", "支付宝",
+            listOf("提现成功，已转入银行卡 500.00 元")
+        )
+        assertNotNull(r)
+        assertEquals(TxType.EXPENSE, r!!.type)
+    }
+
+    @Test
+    fun sentence_title_is_not_merchant() {
+        val r = TransactionParser.parse(
+            "com.eg.android.AlipayGphone",
+            "你已成功收款198.00元.",
+            listOf("已转入余额 做生意收钱提现免费>>")
+        )
+        assertNotNull(r)
+        val merchantName = r!!.merchant
+        assertFalse("商户名不该是整句标题：$merchantName", merchantName.contains("收款"))
+    }
+
+    @Test
+    fun generic_title_is_not_merchant() {
+        val r = TransactionParser.parse(
+            "com.eg.android.AlipayGphone", "交易提醒",
+            listOf("你有一笔181.00元的支出，点此查看详情。")
+        )
+        assertNotNull(r)
+        assertNotEquals("交易提醒", r!!.merchant)
+    }
+
+    @Test
+    fun wechat_generic_title_is_not_merchant() {
+        val r = TransactionParser.parse(
+            "com.tencent.mm", "微信支付", listOf("已支付¥43.05")
+        )
+        assertNotNull(r)
+        assertNotEquals("支付", r!!.merchant)
+        assertEquals(TxType.EXPENSE, r.type)
+    }
 }

@@ -55,7 +55,11 @@ object TransactionParser {
         // 微信/支付宝转账的高频说法
         "收到转账", "成功收款", "你已成功收款", "向你转账", "已到账",
         // 收红包（「收到红包」同时是营销过滤的豁免词，不会被误杀）
-        "收到红包", "抢到红包", "红包入账"
+        "收到红包", "抢到红包", "红包入账",
+        // v2.9 补：这几种说法线上都出现过，原来一个都没覆盖 → 被判成支出
+        "向你付款", "付款给你", "已入账", "收到一笔", "收款到账", "已收钱",
+        // 「收到」单独用太宽（"收到货"），必须跟钱相关的词连用
+        "收到转账", "收到的转账", "收到货款", "收到款项",
     )
 
     /** 排除词：命中就不记账（避免误记） */
@@ -93,6 +97,16 @@ object TransactionParser {
         "领取", "领1元", "领2元", "领3元", "领5元", "领红包", "点击领取", "立即领取",
         "恭喜获得", "点击参与", "点击查看", "点击立即",
         "优惠券", "消费券", "立减", "随机立减", "满减", "满赠", "红包奖励",
+    )
+
+    /**
+     * 标题去掉 App 名之后只剩下这些词，就等于没留下商户信息。
+     * 例：「微信支付」去掉「微信」剩「支付」；不滤掉的话商户名会变成「支付」，
+     * 分类也跟着乱（线上实测过）。
+     */
+    private val TITLE_NOISE = listOf(
+        "支付", "付款", "收款", "转账", "交易", "提醒", "通知",
+        "成功", "失败", "消息", "服务", "助手",
     )
 
     /** 泛化通知标题：它们不是商户名，直接当 merchant 会把分类带偏 */
@@ -250,9 +264,28 @@ object TransactionParser {
         //   充值  —— 「充值成功，已到账 50 元」含「到账」，但钱是出去的
         //   转出  —— 「向 XX 转账」不带「收到」
         // 其余同时命中时以收入为准（"退款成功" 通常也含"支付"）
+        // 收入强信号：出现这些词，基本可以确定钱是进来的。
+        // 单独拎出来是因为付款页常带「收款方」「对方收款」这类字样，
+        // 只靠 hasIncome 的话会被 expense 词抢走方向。
+        val incomeStrong = listOf(
+            "收款成功", "已收款", "你已成功收款", "成功收款", "向你转账", "收到转账",
+            "向你付款", "付款给你", "已入账", "收款到账", "已收钱",
+            "退款成功", "已退款", "红包入账",
+        ).any { body.contains(it) }
+
+        // 「提现」必须带动作词才作数。
+        // 线上事故：收入通知「你已成功收款198.00元. 已转入余额 做生意收钱提现免费>>」
+        // 尾巴上的营销句含「提现」，旧逻辑拿裸「提现」做判据，把 198 元收入记成了支出。
+        val withdrawReal = listOf("提现成功", "已提现", "提现到", "提现金额", "提现申请")
+            .any { body.contains(it) }
+
         val type = when {
-            body.contains("提现") &&
-                !listOf("收到转账", "向你转账").any { body.contains(it) } -> TxType.EXPENSE
+            // 收入强信号优先级最高：「你已成功收款」这种明确到不能再明确，
+            // 不能被营销尾巴里的任何词推翻。
+            incomeStrong -> TxType.INCOME
+
+            // 真提现：钱出去（「提现成功，已转入银行卡」含「转入」但方向是出）
+            withdrawReal -> TxType.EXPENSE
 
             listOf("充值成功", "已充值").any { body.contains(it) } -> TxType.EXPENSE
 
@@ -269,17 +302,24 @@ object TransactionParser {
         ) { onFail("疑似营销奖励文案"); return null }
 
         // 商户名：先取标题（去掉 App 名和前后标点）
-        val fromTitle = title
+        val fromTitleRaw = title
             .replace(Regex("^【[^】]*】"), "")
             .replace(app, "")
             .replace(Regex("^[\\s:：\\-—|]+"), "")
             .replace(Regex("[\\s:：\\-—|]+$"), "")
             .take(40)
 
+        // 去完 App 名只剩「支付」「提醒」这类泛义词 → 等于没信息，交给正文去猜
+        val fromTitle = if (fromTitleRaw.isEmpty() || fromTitleRaw in TITLE_NOISE) "" else fromTitleRaw
+
         // 标题是「交易提醒」这类泛化词时它不构成商户名 —— 宁可标未识别，也别把分类带偏
         // 标题给不出商户（空 / 只有 App 名）时，回到正文里找
+        // 标题本身是一句完整的话（带金额）时，它不是商户名。
+        // 线上事故：标题「你已成功收款198.00元.」被当成商户名，分类也跟着跑偏。
+        val titleIsSentence = AMOUNT_LIKE.containsMatchIn(fromTitle) || fromTitle.length > 22
+
         val merchant = when {
-            fromTitle in GENERIC_TITLES ->
+            fromTitle in GENERIC_TITLES || titleIsSentence ->
                 extractMerchantFromBody(body) ?: "$app（未识别商户）"
             fromTitle.isBlank() || fromTitle == app ->
                 extractMerchantFromBody(body) ?: app

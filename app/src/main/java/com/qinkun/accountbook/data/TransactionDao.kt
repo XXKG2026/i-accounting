@@ -123,6 +123,10 @@ interface TransactionDao {
     )
     suspend fun learnedCategory(merchant: String): String?
 
+    /** 导出用：一次性拿全部流水（列表页用的是 Flow，这里要快照） */
+    @Query("SELECT * FROM transactions ORDER BY occurredAt")
+    suspend fun allOnce(): List<Transaction>
+
     /** 最后一条记账的时间 —— 判断"这次离开支付 App 之后有没有已经记上" */
     @Query("SELECT MAX(occurredAt) FROM transactions")
     suspend fun lastTxAt(): Long?

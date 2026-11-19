@@ -20,6 +20,7 @@ class Repo(context: Context) {
     fun byCategory(type: TxType, from: Long, to: Long): Flow<List<CategorySum>> = dao.groupByCategory(type, from, to)
 
     suspend fun add(tx: Transaction) = dao.insert(tx)
+    suspend fun allOnce(): List<Transaction> = dao.allOnce()
     suspend fun addIfNew(tx: Transaction): Long = dao.insertIfNew(tx)
     suspend fun remove(tx: Transaction) = dao.delete(tx)
     suspend fun update(tx: Transaction) = dao.update(tx)
