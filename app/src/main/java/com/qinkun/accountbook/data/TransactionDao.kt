@@ -43,6 +43,13 @@ interface TransactionDao {
     suspend fun insert(tx: Transaction): Long
 
     /**
+     * 批量插入。导入几千条历史账单时逐条 insert 会是几千个事务，
+     * 慢到用户以为卡死；一次走一个事务，几秒就完。
+     */
+    @Insert
+    suspend fun insertAll(list: List<Transaction>): List<Long>
+
+    /**
      * 查重 + 插入放在同一个事务里，避免两条并发通知同时通过查重。
      * 返回 -1 表示判定为重复、未插入。
      */
@@ -58,14 +65,21 @@ interface TransactionDao {
             tx.amountCents, tx.sourceApp,
             tx.occurredAt - TWIN_WINDOW_MS, tx.occurredAt + TWIN_WINDOW_MS, tx.occurredAt,
         ).firstOrNull { old ->
+            // 收支方向不同绝不是同一笔：2 秒内「付 100」和「退 100」会被
+            // SAME_MOMENT 分支合并成一条，等于把退款吞了
+            if (old.type != tx.type) return@firstOrNull false
             val gap = kotlin.math.abs(old.occurredAt - tx.occurredAt)
-            if (isRealMerchant(old.merchant) && isRealMerchant(tx.merchant)) {
-                sameMerchantFamily(old.merchant, tx.merchant)
-            } else {
-                // 两边都没商户名时，30 秒窗口太宽了：菜市场连买两把 5 元的菜，
-                // 两条都提不出商户名，第二条会被当成双通道重复吞掉。
-                // 真正的双通道重复（无障碍 + 通知）时间差在几秒内，收紧到 8 秒。
-                gap <= NEAR_SIMULTANEOUS_MS
+            when {
+                // 同一时刻 + 同金额：无障碍和通知各抓一次，或通知重发。
+                // 这种情况下必然是同一笔，不管商户名有没有、对不对得上。
+                gap <= SAME_MOMENT_MS -> true
+
+                // 时间稍远：只有两边商户名对得上才算同一笔，
+                // 否则宁可当两笔记（菜市场连买两把 5 元的菜）
+                isRealMerchant(old.merchant) && isRealMerchant(tx.merchant) ->
+                    sameMerchantFamily(old.merchant, tx.merchant)
+
+                else -> gap <= NEAR_SIMULTANEOUS_MS
             }
         }
 
@@ -107,6 +121,9 @@ interface TransactionDao {
         /** 双通道合并窗口：±90 秒 */
         const val TWIN_WINDOW_MS = 30_000L
 
+        /** 同一时刻（±2 秒）+ 同金额 → 必然是重复抓取，直接合并 */
+        const val SAME_MOMENT_MS = 2_000L
+
         /** 两条都没有商户名时，只有「几乎同时」才敢判成同一笔 */
         const val NEAR_SIMULTANEOUS_MS = 8_000L
     }
@@ -141,11 +158,13 @@ interface TransactionDao {
      * 手动改过的记录本身就是"教学样本"。
      *
      * 排除「其他」：那是兜底的默认值，不是主人主动选的。
+     *
+     * 不排除「手动」：手动补一笔「天外山 → 餐饮」，下次自动抓到天外山就该沿用餐饮。
+     * 之前排除了手动记录，导致「手动教一次」根本不管用。
      */
     @Query(
         """SELECT category FROM transactions
            WHERE merchant = :merchant AND category != '' AND category != '其他'
-             AND sourceApp != '手动'
            GROUP BY category
            ORDER BY COUNT(*) DESC, MAX(occurredAt) DESC
            LIMIT 1"""

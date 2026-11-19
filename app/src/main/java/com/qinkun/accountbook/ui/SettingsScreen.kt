@@ -85,8 +85,19 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
         if (uri != null) {
             ioScope.launch {
                 ioTip = "正在导入…"
-                ioTip = runCatching { Backup.importCsv(ctx, uri) }
-                    .fold({ it.message }, { "导入失败：${it.message}" })
+                // 按文件后缀分流：xlsx 走 Excel 解析，其余当 CSV。
+                // 不看 MIME —— 各家网盘和文件管理器给的 type 五花八门，后缀最靠谱。
+                val name = runCatching {
+                    ctx.contentResolver.query(uri, null, null, null, null)?.use { c ->
+                        val i = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                        if (i >= 0 && c.moveToFirst()) c.getString(i) else null
+                    }
+                }.getOrNull() ?: uri.toString()
+                val isXlsx = name.endsWith(".xlsx", true) || name.endsWith(".xls", true)
+
+                ioTip = runCatching {
+                    if (isXlsx) Backup.importXlsx(ctx, uri) else Backup.importCsv(ctx, uri)
+                }.fold({ it.message }, { "导入失败：${it.message}" })
             }
         }
     }
@@ -333,7 +344,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 Text("数据管理", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = AppColor.ink)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "导出成 CSV，Excel 和手机表格都能打开。导入时会自动跳过重复的，可以当备份还原用。",
+                    "导出成 CSV，Excel 和手机表格都能打开。导入支持 CSV 和 Excel(.xlsx)，表头里有「日期」和「金额」就能读，会自动跳过重复的。",
                     fontSize = 11.sp, color = AppColor.inkSoft
                 )
                 Spacer(Modifier.height(10.dp))
@@ -349,10 +360,15 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                     OutlinedButton(
                         onClick = {
                             importLauncher.launch(
-                                arrayOf("text/csv", "text/comma-separated-values", "text/plain", "*/*")
+                                arrayOf(
+                                    // xlsx 各家给的 MIME 不统一，全列上再兜一个 */*
+                                    "text/csv", "text/comma-separated-values", "text/plain",
+                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    "application/vnd.ms-excel", "*/*",
+                                )
                             )
                         }
-                    ) { Text("导入 CSV", fontSize = 13.sp) }
+                    ) { Text("导入 CSV / Excel", fontSize = 13.sp) }
                 }
                 ioTip?.let {
                     Spacer(Modifier.height(8.dp))

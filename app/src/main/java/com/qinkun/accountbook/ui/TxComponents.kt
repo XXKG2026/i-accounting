@@ -19,9 +19,17 @@ import com.qinkun.accountbook.data.TxType
 import java.text.SimpleDateFormat
 import java.util.*
 
-/** 支出分类 */
+/**
+ * 支出分类。
+ *
+ * 必须和 CategoryRules 能产出的分类一一对应 —— 少一个，自动记账抓到那一类后，
+ * 点开编辑就会因为它不在可选列表里而被静默改成「餐饮」（B 那一版就这样坑过）。
+ * 新增「经营」：差旅、进货、办公采购这类生意开支，不该混进个人消费统计里。
+ */
 val EXPENSE_CATEGORIES = listOf(
-    "餐饮", "购物", "交通", "跑腿快递", "日用", "娱乐", "医疗", "住房", "通讯", "转账", "其他"
+    "餐饮", "购物", "交通", "跑腿快递", "日用", "娱乐",
+    "医疗", "住房", "通讯", "数码", "教育", "人情", "宠物",
+    "经营", "转账", "其他"
 )
 
 /** 收入分类 */
@@ -94,8 +102,13 @@ fun TxDetailDialog(
     var note by remember(tx.id) { mutableStateOf(tx.note) }
     var confirmDelete by remember(tx.id) { mutableStateOf(false) }
 
-    val cats = if (isExpense) EXPENSE_CATEGORIES else INCOME_CATEGORIES
-    if (category !in cats) category = cats.first()
+    var cats = if (isExpense) EXPENSE_CATEGORIES else INCOME_CATEGORIES
+    // 原分类可能不在当前列表里（老数据 / 外部导入）。
+        // 以前这里直接改成第一项「餐饮」，等于用户只改个金额就把分类弄丢了。
+        // 现在保留原值，并把它塞进列表，让用户看得见、能改。
+        if (category !in cats && category.isNotBlank()) {
+            cats = cats + category
+        }
 
     AlertDialog(
         onDismissRequest = onDismiss,
