@@ -31,6 +31,10 @@ fun StatsScreen(vm: MainViewModel, modifier: Modifier = Modifier) {
     val title by vm.rangeTitle.collectAsState()
     val expCats by vm.expenseByCategory.collectAsState()
     val incCats by vm.incomeByCategory.collectAsState()
+    // 整期合计：给「结余」用。下面的支出/收入切换只影响分类明细，不影响这里
+    val totalExpense by vm.expense.collectAsState()
+    val totalIncome by vm.income.collectAsState()
+    val balance = totalIncome - totalExpense
     var showExpense by remember { mutableStateOf(true) }
 
     val data = if (showExpense) expCats else incCats
@@ -68,6 +72,17 @@ fun StatsScreen(vm: MainViewModel, modifier: Modifier = Modifier) {
         ) {
             FilterChip(showExpense, { showExpense = true }, { Text("支出", fontSize = 12.sp) })
             FilterChip(!showExpense, { showExpense = false }, { Text("收入", fontSize = 12.sp) })
+        }
+
+        // 整期三个数：支出 / 收入 / 结余。
+        // 放在空状态判断之前 —— 某个月只有收入没有支出时，也要能看到结余。
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+            SummaryNum("支出", totalExpense, AppColor.expense)
+            SummaryNum("收入", totalIncome, AppColor.income)
+            SummaryNum("结余", balance, if (balance < 0) AppColor.expense else AppColor.ink)
         }
 
         if (data.isEmpty()) {
@@ -140,5 +155,20 @@ private fun DonutChart(values: List<Long>, total: Long, modifier: Modifier, cent
             }
         }
         center()
+    }
+}
+
+/** 统计页顶部的一个数字（支出 / 收入 / 结余），三栏等宽排开 */
+@Composable
+private fun SummaryNum(label: String, cents: Long, color: androidx.compose.ui.graphics.Color) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(label, fontSize = 11.sp, color = AppColor.inkSoft)
+        Spacer(Modifier.height(2.dp))
+        Text(
+            String.format("%.2f", cents / 100.0),
+            fontSize = 15.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = color,
+        )
     }
 }

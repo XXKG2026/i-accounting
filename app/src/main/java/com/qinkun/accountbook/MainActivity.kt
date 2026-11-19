@@ -63,10 +63,11 @@ private data class Tab(val label: String, val icon: ImageVector)
 
 @Composable
 fun AppRoot(vm: MainViewModel, openAdd: MutableState<Boolean> = mutableStateOf(false)) {
+    // 顺序即使用频率：先看今天，再翻流水，最后才是统计和设置
     val tabs = listOf(
         Tab("首页", Icons.Filled.Home),
-        Tab("统计", Icons.Filled.PieChart),
         Tab("明细", Icons.AutoMirrored.Filled.List),
+        Tab("统计", Icons.Filled.PieChart),
         Tab("设置", Icons.Filled.Settings),
     )
     var idx by remember { mutableIntStateOf(0) }
@@ -88,8 +89,8 @@ fun AppRoot(vm: MainViewModel, openAdd: MutableState<Boolean> = mutableStateOf(f
         val m = Modifier.padding(pad)
         when (idx) {
             0 -> HomeScreen(vm, m, openAdd)
-            1 -> StatsScreen(vm, m)
-            2 -> DetailScreen(vm, m)
+            1 -> DetailScreen(vm, m)
+            2 -> StatsScreen(vm, m)
             else -> SettingsScreen(m)
         }
     }
