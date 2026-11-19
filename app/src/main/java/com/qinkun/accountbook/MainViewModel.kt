@@ -47,7 +47,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     )
 
     private val rangeFlow = combine(_ps, _dayTick) { ps, _ ->
-        Repo.rangeFor(ps.period, ps.offset)
+        // 统计走 rangeForStats：翻到 2027 这种还没到的年份时给空区间，
+        // 而不是拿一整年的「未来」去问数据库
+        Repo.rangeForStats(ps.period, ps.offset)
     }
 
     val transactions: StateFlow<List<Transaction>> = rangeFlow

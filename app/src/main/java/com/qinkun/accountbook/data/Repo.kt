@@ -49,8 +49,12 @@ class Repo(context: Context) {
         /**
          * 按周期算起止毫秒。offset 为 0 表示当前周期，-1 上一个周期。
          */
-        fun rangeFor(period: Period, offset: Int): Pair<Long, Long> {
-            val c = Calendar.getInstance()
+        fun rangeFor(
+            period: Period,
+            offset: Int,
+            now: Long = System.currentTimeMillis(),
+        ): Pair<Long, Long> {
+            val c = Calendar.getInstance().apply { timeInMillis = now }
             // 先归零到当天 0 点
             c.set(Calendar.HOUR_OF_DAY, 0)
             c.set(Calendar.MINUTE, 0)
@@ -88,6 +92,25 @@ class Repo(context: Context) {
                     from to c.timeInMillis - 1
                 }
             }
+        }
+
+        /**
+         * 统计用的区间：翻到还没到的周期（比如 2027 年）时给一个空区间。
+         *
+         * 为什么不直接把上界压到「现在」：`rangeFlow` 只在切换周期或跨天时重算，
+         * 上界一旦定死成某一刻，那一刻之后新记的账就会被挡在统计之外 ——
+         * 下午记的账晚上看不见，比空页面更糟。
+         *
+         * 所以只堵「整段都在未来」这种情况：区间起点已经晚于现在，
+         * 说明这一年/月/日还没开始，本来就该是 0。
+         */
+        fun rangeForStats(
+            period: Period,
+            offset: Int,
+            now: Long = System.currentTimeMillis(),
+        ): Pair<Long, Long> {
+            val (from, to) = rangeFor(period, offset, now)
+            return if (from > now) now to now - 1 else from to to
         }
 
         /** 区间的人类可读标题，如「2026 年 11 月」「11 月 10 日 — 11 月 16 日」 */
