@@ -53,7 +53,7 @@ object Backup {
                         t.sourceApp,
                         t.note,
                         t.rawText,
-                    ).joinToString(",") { esc(it) }
+                    ).joinToString(",") { CsvCodec.escape(it) }
                 )
                 w.newLine()
             }
@@ -88,7 +88,7 @@ object Backup {
 
         for (raw in lines.drop(start)) {
             if (raw.isBlank()) continue
-            val cols = parseCsvLine(raw)
+            val cols = CsvCodec.parseLine(raw)
             if (cols.size < 5) { failed++; continue }
 
             val at = runCatching { FMT.parse(cols[0].trim())?.time }.getOrNull()
@@ -125,33 +125,5 @@ object Backup {
             added = added, skipped = skipped, failed = failed,
             message = "新增 $added 条，跳过重复 $skipped 条" + if (failed > 0) "，格式错误 $failed 条" else "",
         )
-    }
-
-    /** CSV 字段转义：含逗号/引号/换行时用双引号包起来，内部引号翻倍 */
-    private fun esc(s: String): String {
-        val v = s.replace("\r", " ").replace("\n", " ")
-        return if (v.contains(',') || v.contains('"')) "\"" + v.replace("\"", "\"\"") + "\"" else v
-    }
-
-    /** 简易 CSV 行解析，支持双引号包裹 */
-    private fun parseCsvLine(line: String): List<String> {
-        val out = ArrayList<String>(8)
-        val sb = StringBuilder()
-        var inQuote = false
-        var i = 0
-        while (i < line.length) {
-            val c = line[i]
-            when {
-                inQuote && c == '"' && i + 1 < line.length && line[i + 1] == '"' -> {
-                    sb.append('"'); i++
-                }
-                c == '"' -> inQuote = !inQuote
-                c == ',' && !inQuote -> { out.add(sb.toString()); sb.clear() }
-                else -> sb.append(c)
-            }
-            i++
-        }
-        out.add(sb.toString())
-        return out
     }
 }
