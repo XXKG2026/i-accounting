@@ -361,7 +361,8 @@ class TransactionParserTest {
     @Test
     fun scoring_beats_keyword_order() {
         // 「某某餐饮管理有限公司」买手机：老逻辑会被"餐饮"抢走，打分制应该判数码
-        val r = p("com.taobao.taobao", "淘宝", "支付成功 订单 ¥4999.00 小米 餐饮管理有限公司")
+        // 用 iPhone 而不是裸「小米」：后者已从数码品牌词里移除（会被粮油店的小米误伤）
+        val r = p("com.taobao.taobao", "淘宝", "支付成功 订单 ¥4999.00 iPhone 15 餐饮管理有限公司")
         assertNotNull(r)
         val cat = TransactionParser.guessCategory(r!!.sourceApp, r.merchant, r.rawText, r.type)
         assertEquals("数码", cat)
@@ -888,5 +889,147 @@ class TransactionParserTest {
         assertNotNull(r)
         assertNotEquals("支付", r!!.merchant)
         assertEquals(TxType.EXPENSE, r.type)
+    }
+
+    // ============================================================
+    //  v3.1 Gemini 审查后的加固
+    // ============================================================
+
+    @Test
+    fun refund_request_is_not_recorded() {
+        // 退款申请只是中间态，钱还没回来
+        assertNull(TransactionParser.parse(
+            "com.taobao.taobao", "退款通知",
+            listOf("您的退款申请已提交，退款金额 19.90 元，请耐心等待")
+        ))
+    }
+
+    @Test
+    fun refund_success_is_income() {
+        val r = TransactionParser.parse(
+            "com.eg.android.AlipayGphone", "支付宝", listOf("退款成功 19.90 元")
+        )
+        assertNotNull(r)
+        assertEquals(TxType.INCOME, r!!.type)
+    }
+
+    @Test
+    fun proxy_payment_is_expense() {
+        val r = TransactionParser.parse(
+            "com.tencent.mm", "微信支付", listOf("你已成功为张三代付 198.00 元")
+        )
+        assertNotNull(r)
+        assertEquals(TxType.EXPENSE, r!!.type)
+    }
+
+    @Test
+    fun lottery_tail_does_not_kill_real_payment() {
+        // 「抽奖」是软排除词，但有「支付成功」就该记账
+        val r = TransactionParser.parse(
+            "com.eg.android.AlipayGphone", "支付宝",
+            listOf("支付成功 20.00 元，获得 1 次抽奖机会")
+        )
+        assertNotNull(r)
+        assertEquals(2000L, r!!.amountCents)
+    }
+
+    @Test
+    fun pending_payment_still_excluded() {
+        assertNull(TransactionParser.parse(
+            "com.eg.android.AlipayGphone", "支付宝", listOf("待支付 20.00 元，请尽快完成")
+        ))
+    }
+
+    @Test
+    fun yu_e_bao_transfer_is_not_recorded() {
+        // 余额宝互转是左口袋到右口袋，不该算消费
+        assertNull(TransactionParser.parse(
+            "com.eg.android.AlipayGphone", "支付宝", listOf("转入余额宝 100.00 元")
+        ))
+    }
+
+    @Test
+    fun gong_zhifu_amount_extracted() {
+        val r = TransactionParser.parse(
+            "com.tencent.mm", "微信支付", listOf("共支付 198.00 元")
+        )
+        assertNotNull(r)
+        assertEquals(19800L, r!!.amountCents)
+    }
+
+    // ============================================================
+    //  DeepSeek 复核后的补充（方向记反的其他组合）
+    // ============================================================
+
+    @Test
+    fun other_person_proxy_pays_me_is_income() {
+        // 「代付」出现在别人替我付的场景，钱是进来的
+        val r = TransactionParser.parse(
+            "com.tencent.mm", "微信支付", listOf("张三代付成功，你已收款 50.00 元")
+        )
+        assertNotNull(r)
+        assertEquals(TxType.INCOME, r!!.type)
+    }
+
+    @Test
+    fun refund_arrived_is_income() {
+        val r = TransactionParser.parse(
+            "com.eg.android.AlipayGphone", "支付宝", listOf("退款到账 19.90 元")
+        )
+        assertNotNull(r)
+        assertEquals(TxType.INCOME, r!!.type)
+    }
+
+    @Test
+    fun shoukuan_daozhang_is_income() {
+        val r = TransactionParser.parse(
+            "com.eg.android.AlipayGphone", "支付宝", listOf("收款到账 100.00 元")
+        )
+        assertNotNull(r)
+        assertEquals(TxType.INCOME, r!!.type)
+    }
+
+    @Test
+    fun red_packet_into_balance_is_income() {
+        val r = TransactionParser.parse(
+            "com.tencent.mm", "微信支付", listOf("红包已存入零钱 5.00 元")
+        )
+        assertNotNull(r)
+        assertEquals(TxType.INCOME, r!!.type)
+    }
+
+    @Test
+    fun group_collection_is_income() {
+        val r = TransactionParser.parse(
+            "com.tencent.mm", "微信支付", listOf("群收款 50.00 元")
+        )
+        assertNotNull(r)
+        assertEquals(TxType.INCOME, r!!.type)
+    }
+
+    // ---- 分类：短品牌词不再乱窜 ----
+
+    @Test
+    fun fruit_apple_is_not_digital() {
+        val c = TransactionParser.guessCategory(
+            "支付宝", "老王水果店", "支付成功 苹果 2 斤 25.00 元", TxType.EXPENSE
+        )
+        assertNotEquals("数码", c)
+    }
+
+    @Test
+    fun iphone_is_digital() {
+        val c = TransactionParser.guessCategory(
+            "支付宝", "Apple Store", "支付成功 iPhone 15 5999.00 元", TxType.EXPENSE
+        )
+        assertEquals("数码", c)
+    }
+
+    @Test
+    fun xiaomi_porridge_is_not_digital() {
+        val c = TransactionParser.guessCategory(
+            "支付宝", "粮油店", "支付成功 小米 5 斤 20.00 元", TxType.EXPENSE
+        )
+        assertNotEquals("数码", c)
     }
 }

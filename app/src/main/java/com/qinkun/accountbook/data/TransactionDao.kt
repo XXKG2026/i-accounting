@@ -35,9 +35,9 @@ interface TransactionDao {
         """SELECT * FROM transactions
            WHERE amountCents = :amount AND sourceApp = :app
              AND occurredAt BETWEEN :from AND :to
-           ORDER BY ABS(occurredAt - :center) LIMIT 1"""
+           ORDER BY ABS(occurredAt - :center) LIMIT 3"""
     )
-    suspend fun findTwin(amount: Long, app: String, from: Long, to: Long, center: Long): Transaction?
+    suspend fun findTwinCandidates(amount: Long, app: String, from: Long, to: Long, center: Long): List<Transaction>
 
     @Insert
     suspend fun insert(tx: Transaction): Long
@@ -52,34 +52,63 @@ interface TransactionDao {
         if (findDuplicate(tx.rawText, tx.occurredAt - windowMs) != null) return -1L
 
         // 第二级：无障碍和通知各抓一次 → 同金额、同来源、时间相邻，算同一笔。
-        // 窗口取 ±90 秒：页面重绘和通知到达通常相差几秒；再宽就会吞掉
-        // 「同一家店连买两次同样价钱」这种真事。
-        val twin = findTwin(
+        // 窗口 30 秒足够覆盖「页面渲染」和「通知到达」的时间差；
+        // 再放宽就会吞掉真实连击（菜市场连买两把同样价钱的菜）。
+        val twin = findTwinCandidates(
             tx.amountCents, tx.sourceApp,
             tx.occurredAt - TWIN_WINDOW_MS, tx.occurredAt + TWIN_WINDOW_MS, tx.occurredAt,
-        )
-        if (twin != null) {
-            // 已存在的那条可能信息更少（比如通知版没有商户名），用新的补全它，
-            // 但绝不新增一条。
-            val betterMerchant = tx.merchant.isNotBlank() && tx.merchant != "手动记账" &&
-                (twin.merchant.isBlank() || twin.merchant == "手动记账")
-            if (betterMerchant) {
-                update(
-                    twin.copy(
-                        merchant = tx.merchant,
-                        category = tx.category,
-                        rawText = tx.rawText.ifBlank { twin.rawText },
-                    )
-                )
+        ).firstOrNull { old ->
+            val gap = kotlin.math.abs(old.occurredAt - tx.occurredAt)
+            if (isRealMerchant(old.merchant) && isRealMerchant(tx.merchant)) {
+                sameMerchantFamily(old.merchant, tx.merchant)
+            } else {
+                // 两边都没商户名时，30 秒窗口太宽了：菜市场连买两把 5 元的菜，
+                // 两条都提不出商户名，第二条会被当成双通道重复吞掉。
+                // 真正的双通道重复（无障碍 + 通知）时间差在几秒内，收紧到 8 秒。
+                gap <= NEAR_SIMULTANEOUS_MS
             }
+        }
+
+        if (twin != null) {
+            // 已存在的那条可能信息更少（通知版没有商户名），用新的补全，
+            // 但绝不新增一条。原文留信息量更大的那份，方便事后核对。
+            val betterMerchant = isRealMerchant(tx.merchant) && !isRealMerchant(twin.merchant)
+            val betterText = if (tx.rawText.length > twin.rawText.length) tx.rawText else twin.rawText
+            update(
+                twin.copy(
+                    merchant = if (betterMerchant) tx.merchant else twin.merchant,
+                    category = if (betterMerchant) tx.category else twin.category,
+                    rawText = betterText,
+                )
+            )
             return -1L
         }
         return insert(tx)
     }
 
+    /** 有真实商户名（不是空、不是「手动记账」、不是「XX（未识别商户）」） */
+    private fun isRealMerchant(m: String): Boolean =
+        m.isNotBlank() && m != "手动记账" && !m.contains("未识别")
+
+    /**
+     * 两条记录能不能算同一商户。
+     *
+     * 规则：
+     *   · 任一方没有真实商户名（无障碍抓到了、通知没抓到）→ 算同一商户
+     *   · 两方都有，且互相包含（「星巴克」vs「星巴克(高新店)」）→ 算同一商户
+     *   · 两方都有但完全不同 → 不是同一笔（可能是连买两次）
+     */
+    private fun sameMerchantFamily(a: String, b: String): Boolean {
+        if (!isRealMerchant(a) || !isRealMerchant(b)) return true
+        return a.contains(b) || b.contains(a)
+    }
+
     companion object {
         /** 双通道合并窗口：±90 秒 */
-        const val TWIN_WINDOW_MS = 90_000L
+        const val TWIN_WINDOW_MS = 30_000L
+
+        /** 两条都没有商户名时，只有「几乎同时」才敢判成同一笔 */
+        const val NEAR_SIMULTANEOUS_MS = 8_000L
     }
 
     @Update

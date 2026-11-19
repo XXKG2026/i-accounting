@@ -11,6 +11,7 @@ import com.qinkun.accountbook.util.PiiMasker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 class NotifyListener : NotificationListenerService() {
@@ -128,6 +129,13 @@ class NotifyListener : NotificationListenerService() {
                 runCatching { repo.pruneCaptureLogs(7) }
             }
         }
+    }
+
+    override fun onDestroy() {
+        // Service 被系统重建时会 new 一个新实例；旧实例的 scope 不取消就是纯泄漏，
+        // 每次重启攒一条，久了进程里躺一堆死协程。
+        scope.cancel()
+        super.onDestroy()
     }
 
     override fun onListenerConnected() {

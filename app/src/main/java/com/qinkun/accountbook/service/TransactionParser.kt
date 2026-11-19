@@ -46,7 +46,9 @@ object TransactionParser {
         // 提现：动作本身就是钱出去（方向由类型特判保证，不靠这里）
         "提现",
         // 打赏：直播/内容平台的典型支出，文案往往只有「打赏 10 元」
-        "打赏"
+        "打赏",
+        // 代付/帮付：钱一定是我出的，且有「成功」字样的多是已完成
+        "代付", "帮付", "代付款", "为他人付款"
     )
 
     /** 收入关键词 */
@@ -68,7 +70,21 @@ object TransactionParser {
         "余额提醒", "账单提醒", "还款提醒",
         "待支付", "请支付", "立即支付",
         "会员到期", "签到", "抽奖", "为你推荐", "猜你喜欢",
+        // 退款只有「成功/已退款」才是真钱到账；中间态一律不记，
+        // 否则「退款申请已提交 19.90 元」会被当成一笔支出/收入。
+        "退款申请", "申请退款", "退款中", "退款处理中", "同意退款", "退款审核",
+        // 余额宝/零钱通互转：左口袋进右口袋，既不是消费也不是收入，
+        // 记进来只会把月度支出统计抬高。
+        "转入余额宝", "转出余额宝", "零钱通转入", "转入零钱通", "理财通转入",
     )
+
+    /**
+     * 「软排除词」：单独出现时多半是广告/未成交，但如果同一条文案里
+     * 有明确的成交确认，就说明它是真交易的附属说明（比如「支付成功 20 元，
+     * 获得 1 次抽奖机会」），不能因此整条丢弃。
+     */
+    private val SOFT_EXCLUDE = listOf("抽奖", "待支付", "请支付", "立即支付")
+
 
     /**
      * 成交确认词 —— 出现这些，说明这是一笔**真实交易**，
@@ -78,9 +94,9 @@ object TransactionParser {
     private val DEAL_CONFIRM = listOf(
         "支付成功", "付款成功", "已支付", "已付款", "支付完成", "付款完成",
         "交易成功", "实付", "扣款", "已扣款",
-        // 「消费」本身是真交易的说法（广告一般只说"支出"，不说"消费 XX 元"）
-        // 少了它，「消费 20 元，使用优惠券」这种真交易会被误杀
-        "消费",
+        // ⚠️ 这里不要放裸「消费」：「消费满 100 送抽奖」是纯广告也会命中它，
+        // 导致软排除豁免被滥用。「消费 20 元」这种真交易由 hasTradeStatement 兜住
+        // （交易动词 + 金额同时出现才算）。
     )
 
     /**
@@ -188,10 +204,23 @@ object TransactionParser {
         "实际支付" to 90, "付款金额" to 90, "支付金额" to 90, "收款金额" to 90,
         "转账金额" to 80, "退款金额" to 80, "到账金额" to 80, "扣款金额" to 80,
         "本次消费" to 70, "消费金额" to 70, "收入金额" to 70, "支出金额" to 70,
+        "共支付" to 90, "已支付" to 90, "合计支付" to 85, "总计" to 60,
         "提现金额" to 70, "红包金额" to 70,
         "共计" to 60, "合计" to 60,
         "订单金额" to 50,
     )
+
+    /**
+     * AMOUNT_LEADS 的正则预编译版。
+     *
+     * 曾经每次解析都在循环里 new Regex —— 一条通知要现编译 20 个正则，
+     * 而通知监听是高频回调，纯属白烧 CPU。正则与权重一起编译一次即可。
+     */
+    private val AMOUNT_LEAD_REGEXES: List<Pair<Int, Regex>> = AMOUNT_LEADS.map { (w, p) ->
+        p to Regex(
+            Regex.escape(w) + """[^0-9￥¥]{0,10}[¥￥]?\s*([0-9,]+(?:\.[0-9]{1,2})?)"""
+        )
+    }
 
     /** 阶段一之后的正则（靠货币符号或「元」推断） */
     private val AMOUNT_REGEXES = listOf(
@@ -232,9 +261,12 @@ object TransactionParser {
         // 营销句剥离后的正文：后续所有判定都用它，rawText 仍保留原文
         val body = stripMarketingSentences(blob)
 
-        // 排除
+        // 排除：软排除词遇到成交确认时放行（「支付成功 20 元，获得 1 次抽奖机会」）
         val hitExclude = EXCLUDE_WORDS.firstOrNull { body.contains(it) }
-        if (hitExclude != null) { onFail("命中排除词「$hitExclude」"); return null }
+        if (hitExclude != null) {
+            val exempt = hitExclude in SOFT_EXCLUDE && DEAL_CONFIRM.any { body.contains(it) }
+            if (!exempt) { onFail("命中排除词「$hitExclude」"); return null }
+        }
 
         // 「向 XXX 转账」是明确的转出；「向你转账」是别人转给我，不算
         val transferOut = Regex("""向.{1,20}?转账""").containsMatchIn(body) &&
@@ -267,10 +299,20 @@ object TransactionParser {
         // 收入强信号：出现这些词，基本可以确定钱是进来的。
         // 单独拎出来是因为付款页常带「收款方」「对方收款」这类字样，
         // 只靠 hasIncome 的话会被 expense 词抢走方向。
+        // 代付：钱是我出的。但必须排除「张三代付成功，你已收款 50 元」这种
+        // 别人替我付、我收钱的场景 —— 出现收入信号就不算我出钱。
+        val proxyPay = listOf("代付", "帮付", "代付款", "为他人付款").any { body.contains(it) } &&
+            listOf("你已收款", "收款成功", "已收款", "到账", "入账", "收到转账", "转账给你")
+                .none { body.contains(it) }
+
         val incomeStrong = listOf(
             "收款成功", "已收款", "你已成功收款", "成功收款", "向你转账", "收到转账",
             "向你付款", "付款给你", "已入账", "收款到账", "已收钱",
             "退款成功", "已退款", "红包入账",
+            // DeepSeek 复核补充：这些说法之前都没显式覆盖，全靠 hasIncome 兜底，
+            // 而兜底会被 expense 词抢走方向
+            "退款到账", "收款到账", "红包已存入", "已存入零钱",
+            "AA收款", "AA 收款", "群收款", "转账给你", "还给你",
         ).any { body.contains(it) }
 
         // 「提现」必须带动作词才作数。
@@ -280,6 +322,9 @@ object TransactionParser {
             .any { body.contains(it) }
 
         val type = when {
+            // 代付是我出钱，先于收入信号判断（「代付成功」里也可能带「成功收款」）
+            proxyPay -> TxType.EXPENSE
+
             // 收入强信号优先级最高：「你已成功收款」这种明确到不能再明确，
             // 不能被营销尾巴里的任何词推翻。
             incomeStrong -> TxType.INCOME
@@ -401,10 +446,7 @@ object TransactionParser {
         var bestPos = Int.MAX_VALUE
         var bestCents: Long? = null
 
-        for ((word, prio) in AMOUNT_LEADS) {
-            val re = Regex(
-                Regex.escape(word) + """[^0-9￥¥]{0,10}[¥￥]?\s*([0-9,]+(?:\.[0-9]{1,2})?)"""
-            )
+        for ((prio, re) in AMOUNT_LEAD_REGEXES) {
             for (m in re.findAll(text)) {
                 val d = m.groupValues[1].replace(",", "").toDoubleOrNull() ?: continue
                 if (d <= 0.0) continue
