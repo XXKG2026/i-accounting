@@ -173,7 +173,12 @@ fun HomeScreen(vm: MainViewModel, modifier: Modifier = Modifier, openAdd: androi
             ) {
                 SummaryCard("支出", expense, AppColor.expense, Modifier.weight(1f))
                 SummaryCard("收入", income, AppColor.income, Modifier.weight(1f))
-                SummaryCard("结余", income - expense, AppColor.ink, Modifier.weight(1f))
+                // 赤字标红：负数结余和正数一个颜色，扫一眼分不出来
+                SummaryCard(
+                    "结余", income - expense,
+                    BalanceStyle.onLight(income - expense),
+                    Modifier.weight(1f),
+                )
             }
 
             Text(

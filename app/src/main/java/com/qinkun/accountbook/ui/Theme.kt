@@ -60,6 +60,31 @@ fun AppTheme(content: @Composable () -> Unit) {
     )
 }
 
+/**
+ * 结余的配色：负数（赤字）要一眼看出来。
+ *
+ * 两处结余在两种底色上，不能共用一个红：
+ *   · 统计页概览卡是深绿底（#4F6F63），砖红 #B83B2B 压在上面发暗、看不清，
+ *     所以深色底用亮珊瑚红；
+ *   · 首页的概览卡是白底，直接用支出的砖红即可。
+ */
+object BalanceStyle {
+    /** 深色底上的赤字色 */
+    val deficitOnDark = Color(0xFFFF8A80)
+
+    /** 统计页概览卡（深绿底）：正数白字，赤字亮红 */
+    fun onDark(balance: Long): Color =
+        if (balance < 0) deficitOnDark else Color.White
+
+    /** 首页概览卡（白底）：正数墨色，赤字砖红 */
+    fun onLight(balance: Long): Color =
+        if (balance < 0) AppColor.expense else AppColor.ink
+
+    /** 金额文本：负数带减号，正数不带 */
+    fun text(cents: Long): String =
+        (if (cents < 0) "-" else "") + String.format("%.2f", kotlin.math.abs(cents) / 100.0)
+}
+
 /** v4.0：分类的图标（emoji，不引入额外资源）。没收录的分类一律用 📝 */
 object CategoryStyle {
     private val EMOJI = mapOf(
