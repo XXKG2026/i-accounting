@@ -56,13 +56,26 @@ class NotifyListener : NotificationListenerService() {
 
         if (texts.isEmpty() && title.isBlank()) return
 
+        // v4.1：完整采集。解析仍只用上面几个核心字段（避免长度门槛被撑爆），
+        // 但入库的「原始通知」把通知里所有带字的字段都留下：
+        // 展开标题、摘要、对话标题、滚动提示 —— 支付宝收钱码的「今日第 N 笔，共计 X 元」
+        // 有时只出现在摘要里。
+        val extraFields = listOf(
+            str(Notification.EXTRA_TITLE_BIG),
+            str(Notification.EXTRA_SUMMARY_TEXT),
+            str(Notification.EXTRA_CONVERSATION_TITLE),
+            n.tickerText?.toString()?.trim().orEmpty(),
+        )
+        val fullText = listOf(title).filter { it.isNotBlank() } +
+            TransactionParser.mergeFields(texts + extraFields).filter { it != title }
+
         var failReason: String? = null
         val parsed = TransactionParser.parse(pkg, title, texts) { failReason = it }
         val at = if (sbn.postTime > 0) sbn.postTime else System.currentTimeMillis()
 
         // 日志用的原文（脱敏后），失败时也要留下，方便事后排查
         val logTitle = PiiMasker.mask(title)
-        val logText = PiiMasker.mask(texts.joinToString(" / "))
+        val logText = PiiMasker.mask(TransactionParser.mergeFields(texts + extraFields).joinToString(" / "))
 
         scope.launch {
             try {
@@ -93,9 +106,10 @@ class NotifyListener : NotificationListenerService() {
                         category = category,
                         merchant = maskedMerchant,
                         sourceApp = parsed.sourceApp,
-                        note = "",
+                        // 「老顾客消费，今日第3笔收款，共计500.00元」这类附加信息
+                        note = PiiMasker.mask(parsed.note),
                         occurredAt = at,
-                        rawText = PiiMasker.mask(parsed.rawText),
+                        rawText = PiiMasker.mask(fullText.joinToString(" / ").take(MAX_RAW_CHARS)),
                     )
                 )
 
@@ -162,6 +176,10 @@ class NotifyListener : NotificationListenerService() {
 
     companion object {
         const val TAG = "NotifyListener"
+
+        /** 原文最长留多少字：够看全一条通知，又不至于让聊天类长文把库撑大 */
+        const val MAX_RAW_CHARS = 500
+
         @Volatile private var lastPruneAt = 0L
     }
 }

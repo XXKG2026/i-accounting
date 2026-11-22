@@ -29,6 +29,29 @@ class Repo(context: Context) {
 
     suspend fun lastTxAt(): Long? = dao.lastTxAt()
 
+    /**
+     * v4.1 一次性修复：旧版收钱码收款被记成商户「你已成功」。
+     * 用库里留着的原始通知重算商户名（老顾客/新顾客）和备注；用户手动改过的备注不动。
+     * 返回修了几条。
+     */
+    suspend fun repairReceiptMerchants(): Int {
+        var fixed = 0
+        for (tx in dao.suspiciousIncomeMerchants(TxType.INCOME)) {
+            val tag = com.qinkun.accountbook.service.TransactionParser.receiptTag(tx.rawText) ?: continue
+            val note = tx.note.ifBlank {
+                com.qinkun.accountbook.service.TransactionParser.extractNote(tx.rawText)
+            }
+            val category = if (tx.category == "其他" || tx.category == "转账") {
+                com.qinkun.accountbook.service.TransactionParser.guessCategory(
+                    tx.sourceApp, tag, tx.rawText, TxType.INCOME
+                )
+            } else tx.category
+            dao.update(tx.copy(merchant = tag, note = note, category = category))
+            fixed++
+        }
+        return fixed
+    }
+
     /** 商户→分类的记忆（按收支方向分开）；null 表示这个商户在这个方向上还没被教过 */
     suspend fun learnedCategory(merchant: String, type: TxType): String? =
         if (merchant.isBlank()) null else dao.learnedCategory(merchant, type)

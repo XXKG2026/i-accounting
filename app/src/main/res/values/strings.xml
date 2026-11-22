@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">i记账</string>
-    <string name="accessibility_service_desc">只在微信、支付宝的付款结果页面读取金额与商户，用于自动记账。数据仅存本机，不联网、不上传。</string>
+    <string name="accessibility_service_desc">只在微信、支付宝扫码付款结果页，以及美团、淘宝、天猫、饿了么、京东、拼多多的支付成功页读取金额与商户，用于自动记账。不模拟点击，数据仅存本机，不联网、不上传。</string>
 </resources>

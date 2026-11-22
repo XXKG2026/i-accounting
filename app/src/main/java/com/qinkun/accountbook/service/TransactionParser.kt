@@ -221,6 +221,8 @@ object TransactionParser {
      */
     private val AMOUNT_LEADS: List<Pair<String, Int>> = listOf(
         "实付" to 100, "实收" to 100,
+        // v4.1：收款通知的本笔金额（「你已成功收款168.00元」）
+        "成功收款" to 95, "已成功收款" to 95,
         "实际支付" to 90, "付款金额" to 90, "支付金额" to 90, "收款金额" to 90,
         "转账金额" to 80, "退款金额" to 80, "到账金额" to 80, "扣款金额" to 80,
         "本次消费" to 70, "消费金额" to 70, "收入金额" to 70, "支出金额" to 70,
@@ -258,6 +260,11 @@ object TransactionParser {
         val sourceApp: String,
         val merchant: String,
         val rawText: String,
+        /**
+         * v4.1：通知里除了金额、商户之外的有用信息（「老顾客消费」「今日第3笔收款，共计500.00元」），
+         * 自动填进备注，免得只能点开原文才看得到。
+         */
+        val note: String = "",
     )
 
     /**
@@ -458,7 +465,7 @@ object TransactionParser {
         // 线上事故：标题「你已成功收款198.00元.」被当成商户名，分类也跟着跑偏。
         val titleIsSentence = AMOUNT_LIKE.containsMatchIn(fromTitle) || fromTitle.length > 22
 
-        val merchant = when {
+        val baseMerchant = when {
             fromTitle in GENERIC_TITLES || titleIsSentence ->
                 extractMerchantFromBody(body) ?: "$app（未识别商户）"
             fromTitle.isBlank() || fromTitle == app ->
@@ -466,8 +473,66 @@ object TransactionParser {
             else -> fromTitle
         }
 
-        return Parsed(cents, type, app, merchant, blob)
+        // v4.1：收钱码到账通知没有付款人名字，只有「老顾客 / 新顾客」这种标签。
+        // 以前从「你已成功收款」里硬抠出「你已成功」当商户名，列表里一排「你已成功」。
+        // 商户名拿不到时，用顾客标签代替。
+        val tag = receiptTag(blob)
+        val merchant =
+            if (type == TxType.INCOME && tag != null &&
+                (fromTitle.isBlank() || fromTitle == app || fromTitle in GENERIC_TITLES ||
+                    titleIsSentence || baseMerchant == app || baseMerchant.contains("未识别"))
+            ) tag else baseMerchant
+
+        // 备注按字段分行再挑：blob 用空格拼接，营销尾巴会和正经句子粘在一段里
+        return Parsed(cents, type, app, merchant, blob, extractNote((listOf(title) + texts).joinToString("\n")))
     }
+
+    /**
+     * 合并通知各字段并去重：完全相同的去掉，被别的字段整段包含的也去掉
+     * （bigText 通常就是 text 的加长版，两份都留只会让原文读起来重复一遍）。保留原有顺序。
+     */
+    fun mergeFields(fields: List<String>): List<String> {
+        val clean = fields.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        return clean.filter { f -> clean.none { o -> o != f && o.contains(f) } }
+    }
+
+    /** 收钱码到账通知里的顾客标签 */
+    private val RECEIPT_TAG = Regex("""老顾客|新顾客|回头客|首次光顾|新客户|老客户""")
+
+    /** 「老顾客 / 新顾客」这类标签；没有返回 null */
+    fun receiptTag(text: String): String? = RECEIPT_TAG.find(text)?.value
+
+    /** 值得放进备注的句子特征 */
+    private val NOTE_KEEP = Regex("""顾客|回头客|光顾|新客户|老客户|今日第|今天第|当日第|第\s*\d+\s*笔|累计|共计|合计|附言|留言|备注|买家""")
+
+    /** 营销尾巴：不进备注 */
+    private val NOTE_DROP = Regex("""提现免费|花呗|信用卡|点击|领取|立即|>>|》|开通|免费|优惠|红包奖励""")
+
+    /**
+     * 从通知原文里挑出「金额、商户之外」还有用的信息，拼成备注。
+     *
+     *   「你已成功收款168.00元（老顾客消费）/ 今日第3笔收款，共计500.00元 / 线上收款支持花呗>>」
+     *   → 「老顾客消费，今日第3笔收款，共计500.00元」
+     *
+     * 只做挑选，不做改写；最长 60 字。没有可挑的返回空串。
+     */
+    fun extractNote(text: String): String {
+        val segs = text.split(Regex("""[，,。;；!！\n/（）()|]|>>"""))
+            // 老数据的原文是空格拼的：带营销词的段再按空格拆一次，把正经部分救回来
+            .flatMap { if (NOTE_DROP.containsMatchIn(it)) it.split(Regex("""\s+""")) else listOf(it) }
+            .map { it.trim().trim('.', ' ') }
+            .filter { it.length in 2..30 }
+            .filter { NOTE_KEEP.containsMatchIn(it) && !NOTE_DROP.containsMatchIn(it) }
+            .distinct()
+        return segs.joinToString("，").take(60)
+    }
+
+    /** 抠出来的「商户名」里出现这些，说明抠到的是句子成分 */
+    private val BAD_MERCHANT = Regex(
+        """成功|^你|^我|^已|^您|^向|已经|通过|今日|今天|本次|第\s*\d|笔|共计|合计|累计|""" +
+            // 「线上收款」「扫码收款」「支付宝收款」里的定语，不是收款方
+            """^(?:线上|线下|扫码|当面|商家|个人|经营|收钱码|二维码|微信|微信支付|支付宝)$"""
+    )
 
     /** 正文里的商户线索：「在 X 消费」「向 X 付款」「X 收款」 */
     private val MERCHANT_PATTERNS = listOf(
@@ -527,16 +592,23 @@ object TransactionParser {
      */
     fun extractMerchantFromBody(text: String): String? {
         for (re in MERCHANT_PATTERNS) {
-            val m = re.find(text) ?: continue
-            val name = m.groupValues[1].trim()
-            // 排掉「你」「我」这类代词和纯数字
-            if (name.length < 2) continue
-            if (name in listOf("你", "我", "他", "她", "它", "本店", "该店")) continue
-            if (name.all { it.isDigit() }) continue
-            return name
+            for (m in re.findAll(text)) {
+                val name = m.groupValues[1].trim()
+                // 排掉「你」「我」这类代词和纯数字
+                if (name.length < 2) continue
+                if (name in listOf("你", "我", "他", "她", "它", "本店", "该店")) continue
+                if (name.all { it.isDigit() }) continue
+                // v4.1：「你已成功收款」「已成功收款」「成功收款」会被「X收款」模板
+                // 抠出「你已成功」「已成功」当商户名 —— 这些是句子成分，不是人名店名
+                if (BAD_MERCHANT.containsMatchIn(name)) continue
+                return name
+            }
         }
         return null
     }
+
+    /** 出现在金额引导词前面时，说明这是汇总数，不是本笔 */
+    private val SUMMARY_CONTEXT = listOf("今日第", "今天第", "当日第", "累计", "本月", "今日共", "今天共", "笔收款", "笔交易")
 
     /** 从文本里抓金额，返回「分」 */
     fun extractCents(text: String): Long? {
@@ -547,6 +619,10 @@ object TransactionParser {
 
         for ((prio, re) in AMOUNT_LEAD_REGEXES) {
             for (m in re.findAll(text)) {
+                // v4.1：「今日第3笔收款，共计500.00元」「累计收款 2,000 元」是当日汇总，
+                // 不是这一笔。「共计」权重 60 会压过「X.XX 元」，把汇总当成本笔金额。
+                val before = text.substring(maxOf(0, m.range.first - 12), m.range.first)
+                if (SUMMARY_CONTEXT.any { before.contains(it) }) continue
                 val d = m.groupValues[1].replace(",", "").toDoubleOrNull() ?: continue
                 if (d <= 0.0) continue
                 val cents = Math.round(d * 100)
@@ -561,7 +637,7 @@ object TransactionParser {
         if (bestCents != null) return bestCents
 
         // 阶段二~四：靠符号或单位推断，必须跳过余额/可用额度这类
-        val skipWords = listOf("余额", "可用", "额度", "剩余", "总计有")
+        val skipWords = listOf("余额", "可用", "额度", "剩余", "总计有") + SUMMARY_CONTEXT
         for (regex in AMOUNT_REGEXES) {
             for (m in regex.findAll(text)) {
                 val before = text.substring(maxOf(0, m.range.first - 12), m.range.first)

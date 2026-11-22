@@ -26,6 +26,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val repo = Repo(app)
 
+    init {
+        // v4.1：一次性修复旧版「你已成功」商户名。做完记个标记，以后不再跑。
+        viewModelScope.launch {
+            val prefs = app.getSharedPreferences("accountbook_prefs", android.content.Context.MODE_PRIVATE)
+            if (!prefs.getBoolean(KEY_RECEIPT_FIX, false)) {
+                runCatching { repo.repairReceiptMerchants() }
+                    .onSuccess {
+                        prefs.edit().putBoolean(KEY_RECEIPT_FIX, true).apply()
+                        android.util.Log.i("MainViewModel", "修复收款商户名 $it 条")
+                    }
+            }
+        }
+    }
+
     private val _ps = MutableStateFlow(PeriodState())
     val periodState: StateFlow<PeriodState> = _ps.asStateFlow()
 
@@ -134,4 +148,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun updateTx(tx: Transaction) { viewModelScope.launch { repo.update(tx) } }
 
     fun delete(tx: Transaction) { viewModelScope.launch { repo.remove(tx) } }
+
+    private companion object {
+        const val KEY_RECEIPT_FIX = "fix_receipt_merchant_v41"
+    }
 }

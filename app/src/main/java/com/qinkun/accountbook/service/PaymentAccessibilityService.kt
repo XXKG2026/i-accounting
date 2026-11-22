@@ -1,8 +1,11 @@
 package com.qinkun.accountbook.service
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.ComponentName
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.text.TextUtils
 import android.util.Log
@@ -11,7 +14,6 @@ import android.view.accessibility.AccessibilityNodeInfo
 import com.qinkun.accountbook.data.CaptureLog
 import com.qinkun.accountbook.data.Repo
 import com.qinkun.accountbook.data.Transaction
-import com.qinkun.accountbook.data.TxType
 import com.qinkun.accountbook.util.PiiMasker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -20,73 +22,142 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 /**
- * 扫码支付的自动记账（v2.6 新增，需要用户手动授权无障碍）。
+ * 付款结果页自动记账（需要用户手动授权无障碍）。
  *
- * 为什么非要它：微信/支付宝的「扫一扫」「付款码」付款，结果直接画在页面上，
- * **一条系统通知都不发**。通知监听和无障碍之外的任何手段都拿不到。
+ * 覆盖：微信/支付宝扫码、付款码付款（这类付款**一条系统通知都不发**），
+ * 以及美团、美团外卖、淘宝（含淘宝闪购）、天猫、饿了么、京东、拼多多的下单支付成功页。
+ *
+ * v4.2 重写，修掉了「扫码付款一直采集不到」的 4 个原因：
+ *   1. 整页文字被喂进通知解析器，被「超过 120 字不是通知」那道闸丢掉 —— 改用 [ScreenPageParser] 按节点解析
+ *   2. 微信付款成功页带「关注公众号」，命中黑名单整页丢弃 —— 改为软黑名单，有「完成」按钮时放行
+ *   3. 节点只收到第 12 层、前 40 个 —— 微信/支付宝页面层级很深，金额和商户经常在 12 层以下
+ *   4. 事件节流是「丢弃」：250ms 内的后续事件直接扔掉，偏偏页面最后一次渲染（金额出现）
+ *      常常就在被扔掉的那次 —— 改为「防抖」：停下来 400ms 再读，且最长 1.2 秒必读一次
  *
  * 安全边界（这段是承诺，改代码时别破坏）：
- *   1. 配置里只订阅 com.tencent.mm / com.eg.android.AlipayGphone 两个包名
- *   2. 页面必须含「支付成功 / 付款成功 / 已支付 / 交易成功」才算数
- *   3. 命中账单页/聊天页关键词一律跳过（防止翻历史账单时重复记账）
+ *   1. 配置里只订阅 [ScreenPageParser.SCREEN_APPS] 里的包名
+ *   2. 页面必须有「支付成功 / 付款成功 / 交易成功 / 下单成功」**且**有结果页特征
+ *   3. 命中账单页 / 订单列表 / 聊天页关键词一律跳过
  *   4. 只取文本，不模拟点击、不注入事件、不改别家 App 的任何东西
  *   5. 数据只进本地数据库，不联网
- *
- * 稳定性：
- *   - 60 秒内同一「包名+金额+商户」只记一次（页面重绘会反复回调）
- *   - 入库前走和通知同一条管线（parse → guessCategory → PiiMasker → addIfNew）
  */
 class PaymentAccessibilityService : AccessibilityService() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private lateinit var repo: Repo
+    private val main = Handler(Looper.getMainLooper())
 
     private var lastSignature: String = ""
     private var lastCaptureAt: Long = 0L
+    private var lastRejectSig: String = ""
+    private var lastRejectAt: Long = 0L
 
-    /** 事件节流：朋友圈/聊天刷屏时 contentChanged 一秒能来几十次 */
-    private var lastEventAt: Long = 0L
+    /** 防抖状态 */
+    private var pendingPkg: String? = null
+    private var pendingSince: Long = 0L
+    private val scanRunnable = Runnable { runScan() }
 
     override fun onCreate() {
         super.onCreate()
         repo = Repo(applicationContext)
     }
 
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        // 运行时再补一遍 flag：有些 ROM 不认 xml 里的部分 flag
+        runCatching {
+            serviceInfo = serviceInfo.apply {
+                flags = flags or
+                    AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
+                    AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
+                    AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
+            }
+        }
+        Log.i(TAG, "无障碍已连接")
+    }
+
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val pkg = event?.packageName?.toString() ?: return
-        if (pkg !in PaymentWatcher.PAY_PACKAGES) return
-
-        // 节流：typeWindowContentChanged 在高频刷屏时一秒几十次，
-        // 每次都要跨进程遍历节点树 —— 不节流会掉帧甚至 ANR
-        val tick = System.currentTimeMillis()
-        if (tick - lastEventAt < 250L) return
-        lastEventAt = tick
-
-        val root = rootInActiveWindow ?: return
-        val texts = ArrayList<String>(40)
-        collectNodeTexts(root, texts)
-        if (texts.isEmpty()) return
-
-        if (!isPaymentResultPage(texts)) return
-
-        val appName = TransactionParser.APP_NAMES[pkg] ?: "支付"
-
-        // 先按通知那套解析（金额、方向）
-        val parsedBase = TransactionParser.parse(
-            pkg = pkg,
-            title = "$appName 支付成功",
-            texts = texts,
-        ) ?: return
-
-        // 扫码结果页是「平铺节点」，没有「在 X 消费」这种介词结构，
-        // 所以商户名另走一条：锚点词之后的第一个像名字的文本
-        val merchant = TransactionParser.extractMerchantFromScanNodes(texts)
-            ?: parsedBase.merchant
-
-        val parsed = parsedBase.copy(merchant = merchant)
+        if (pkg !in ScreenPageParser.SCREEN_APPS) return
 
         val now = System.currentTimeMillis()
-        val sig = "$pkg:${parsed.amountCents}:$merchant"
+        if (pendingPkg != pkg) { pendingPkg = pkg; pendingSince = now }
+        main.removeCallbacks(scanRunnable)
+        // 防抖：页面停止变化 400ms 后读一次；一直在刷（动画、倒计时）也最多等 1.2 秒
+        val waited = now - pendingSince
+        if (waited >= MAX_WAIT_MS) {
+            runScan()
+        } else {
+            main.postDelayed(scanRunnable, DEBOUNCE_MS)
+        }
+    }
+
+    private fun runScan() {
+        val pkg = pendingPkg ?: return
+        pendingPkg = null
+        val nodes = runCatching { collectWindowTexts(pkg) }.getOrElse {
+            Log.e(TAG, "读页面失败", it); return
+        }
+        if (nodes.isEmpty()) return
+
+        when (val out = ScreenPageParser.analyze(pkg, nodes)) {
+            ScreenPageParser.Outcome.NotResultPage -> Unit
+            is ScreenPageParser.Outcome.Rejected -> logRejected(pkg, out)
+            is ScreenPageParser.Outcome.Ok -> save(pkg, out.parsed)
+        }
+    }
+
+    /** 当前属于这个包的所有窗口的文本（收银台常是弹窗，不在 rootInActiveWindow 里） */
+    private fun collectWindowTexts(pkg: String): List<String> {
+        val out = ArrayList<String>(MAX_NODES)
+        val roots = ArrayList<AccessibilityNodeInfo>()
+        runCatching {
+            windows?.forEach { w -> w.root?.takeIf { it.packageName?.toString() == pkg }?.let { roots.add(it) } }
+        }
+        if (roots.isEmpty()) rootInActiveWindow?.takeIf { it.packageName?.toString() == pkg }?.let { roots.add(it) }
+        for (r in roots) collectNodeTexts(r, out, 0)
+        return out
+    }
+
+    /** 递归收文本。深度放到 40、节点放到 160：微信/支付宝的结果页 12 层根本不够 */
+    private fun collectNodeTexts(node: AccessibilityNodeInfo?, out: MutableList<String>, depth: Int) {
+        if (node == null || depth > MAX_DEPTH || out.size >= MAX_NODES) return
+        if (!node.isVisibleToUser) return
+        node.text?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let { out.add(it.take(80)) }
+        node.contentDescription?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            if (out.lastOrNull() != it) out.add(it.take(80))
+        }
+        for (i in 0 until node.childCount) {
+            runCatching { collectNodeTexts(node.getChild(i), out, depth + 1) }
+        }
+    }
+
+    private fun logRejected(pkg: String, r: ScreenPageParser.Outcome.Rejected) {
+        // 同一页反复重绘只记一条
+        val now = System.currentTimeMillis()
+        val sig = pkg + r.reason + r.rawText.take(80)
+        if (sig == lastRejectSig && now - lastRejectAt < 60_000L) return
+        lastRejectSig = sig; lastRejectAt = now
+        val app = ScreenPageParser.SCREEN_APPS[pkg] ?: pkg
+        scope.launch {
+            runCatching {
+                repo.addCaptureLog(
+                    CaptureLog(
+                        at = now, sourceApp = app,
+                        title = "付款页（无障碍）",
+                        text = PiiMasker.mask(r.rawText),
+                        success = false,
+                        reason = r.reason,
+                    )
+                )
+            }
+        }
+        Log.d(TAG, "付款页未记账（${r.reason}）")
+    }
+
+    private fun save(pkg: String, parsed: TransactionParser.Parsed) {
+        val now = System.currentTimeMillis()
+        val sig = "$pkg:${parsed.amountCents}:${parsed.merchant}"
         // 20 秒：页面重绘的重复回调挡得住，而菜市场连买两摊同样的东西不会被吞
         if (sig == lastSignature && now - lastCaptureAt < 20_000L) return
         lastSignature = sig
@@ -106,22 +177,21 @@ class PaymentAccessibilityService : AccessibilityService() {
                         category = category,
                         merchant = maskedMerchant,
                         sourceApp = parsed.sourceApp,
-                        note = "",
+                        note = PiiMasker.mask(parsed.note),
                         occurredAt = now,
                         rawText = PiiMasker.mask(parsed.rawText),
                     )
                 )
                 val isDup = id < 0
                 val yuan = String.format("%.2f", parsed.amountCents / 100.0)
-                val dir = if (parsed.type == TxType.EXPENSE) "支出" else "收入"
 
                 repo.addCaptureLog(
                     CaptureLog(
                         at = now, sourceApp = parsed.sourceApp,
-                        title = "扫码页（无障碍）",
-                        text = PiiMasker.mask(texts.joinToString(" / ")),
+                        title = "付款页（无障碍）",
+                        text = PiiMasker.mask(parsed.rawText),
                         success = !isDup,
-                        reason = if (isDup) "重复（20 秒内同金额同商户）" else "$dir ¥$yuan · $category",
+                        reason = if (isDup) "和通知抓到的是同一笔，已合并" else "支出 ¥$yuan · $category · ${parsed.merchant}",
                         amountCents = if (isDup) 0 else parsed.amountCents,
                     )
                 )
@@ -136,73 +206,24 @@ class PaymentAccessibilityService : AccessibilityService() {
         }
     }
 
-    /** 递归收文本，限深度和数量，避免大页面把主线程拖住 */
-    private fun collectNodeTexts(
-        node: AccessibilityNodeInfo?,
-        out: MutableList<String>,
-        depth: Int = 0,
-    ) {
-        if (node == null || depth > 12 || out.size >= 40) return
-        node.text?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let { out.add(it) }
-        node.contentDescription?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let {
-            if (out.lastOrNull() != it) out.add(it)
-        }
-        for (i in 0 until node.childCount) {
-            runCatching { collectNodeTexts(node.getChild(i), out, depth + 1) }
-        }
-    }
-
     override fun onInterrupt() {}
 
     override fun onDestroy() {
+        main.removeCallbacks(scanRunnable)
         scope.cancel()
         super.onDestroy()
     }
 
     companion object {
         private const val TAG = "PayAccessibility"
+        private const val DEBOUNCE_MS = 400L
+        private const val MAX_WAIT_MS = 1_200L
+        private const val MAX_DEPTH = 40
+        private const val MAX_NODES = 160
 
-        /**
-         * 这段文本像不像「刚付完款的结果页」。
-         *
-         * 三道闸缺一不可：
-         *   有成功锚点（支付成功/付款成功/已支付/交易成功）
-         *   **且** 有结果页特征（完成 / 订单号 / 支付方式…）
-         *   **且** 没命中账单、聊天、公众号等黑名单
-         *
-         * 为啥要第二道：公众号文章、账单流水里也会出现「已支付」「支付成功」，
-         * 光看锚点会误记账。
-         */
-        internal fun isPaymentResultPage(texts: List<String>): Boolean {
-            if (texts.isEmpty()) return false
-            val joined = texts.joinToString(" ")
-            return SUCCESS_ANCHORS.any { joined.contains(it) } &&
-                RESULT_PAGE_HINTS.any { joined.contains(it) } &&
-                HISTORY_PAGE_MARKERS.none { joined.contains(it) }
-        }
-
-        private val SUCCESS_ANCHORS = listOf("支付成功", "付款成功", "已支付", "交易成功")
-
-        /**
-         * 命中这些说明在翻历史账单 / 看公众号文章 / 聊天，不是刚付完款。
-         *
-         * 黑名单只是第二道闸；第一道是下面 [RESULT_PAGE_HINTS] ——
-         * 光靠黑名单防不住「公众号文章里恰好写了『支付成功 ¥20』」这种。
-         */
-        private val HISTORY_PAGE_MARKERS = listOf(
-            "账单详情", "月账单", "搜索账单", "查看全部账单", "筛选项", "全部账单",
-            "本月支出", "本月收入", "收支明细", "零钱明细", "交易记录", "交易明细",
-            "发消息", "按住说话", "转账记录", "公众号", "朋友圈", "看一看", "搜一搜",
-        )
-
-        /**
-         * 付款结果页几乎一定带这些东西（按钮、订单号、支付时间）。
-         * 要求至少命中一个，把「文章/列表里提及金额」这类误判挡在外面。
-         */
-        private val RESULT_PAGE_HINTS = listOf(
-            "完成", "返回商户", "查看详情", "订单号", "交易单号", "支付时间",
-            "付款方式", "支付方式",
-        )
+        /** 兼容旧测试：只看微信/支付宝的页面闸门 */
+        internal fun isPaymentResultPage(texts: List<String>): Boolean =
+            ScreenPageParser.isResultPage("com.tencent.mm", texts)
 
         /** 无障碍是否已授权 */
         fun isEnabled(ctx: Context): Boolean {

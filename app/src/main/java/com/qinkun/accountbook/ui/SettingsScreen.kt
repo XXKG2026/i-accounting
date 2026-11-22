@@ -218,8 +218,8 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                         Text("扫码自动抓取", fontSize = 15.sp,
                             fontWeight = FontWeight.Medium, color = AppColor.ink)
                         Text(
-                            if (scanA11y) "已开启：微信/支付宝付款后自动记上"
-                            else "扫码付款不发通知，开启后可自动识别付款结果页",
+                            if (scanA11y) "已开启：扫码付款、美团/淘宝下单后自动记上"
+                            else "扫码付款、App 内下单常常不发通知，开启后自动识别支付成功页",
                             fontSize = 11.sp,
                             color = if (scanA11y) AppColor.income else AppColor.inkSoft
                         )
@@ -242,9 +242,25 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 }
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "需要无障碍权限。本 App 只订阅微信和支付宝，只看付款成功页，不模拟点击、不联网。",
+                    "需要无障碍权限。只订阅微信、支付宝、美团、美团外卖、淘宝、天猫、饿了么、京东、拼多多，" +
+                        "只看支付成功页，不模拟点击、不联网。",
                     fontSize = 10.sp, color = AppColor.inkSoft
                 )
+                if (!scanA11y) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "开关是灰色、点不动？Android 13 起，不是从应用商店装的 App 默认禁用无障碍：" +
+                            "到「设置 → 应用 → i记账 → 右上角 ⋮ → 允许受限制的设置」，再回来开启。",
+                        fontSize = 10.sp, color = AppColor.expense
+                    )
+                }
+                if (scanA11y) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "付完款没记上？到「抓取记录」看标着「付款页（无障碍）」的条目，里面有原因和页面原文。",
+                        fontSize = 10.sp, color = AppColor.inkSoft
+                    )
+                }
             }
         }
 

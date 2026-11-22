@@ -25,19 +25,14 @@ interface TransactionDao {
     @Query("SELECT * FROM transactions WHERE rawText = :raw AND occurredAt > :since LIMIT 1")
     suspend fun findDuplicate(raw: String, since: Long): Transaction?
 
-    /**
-     * 同一笔钱可能被两条通道各抓一次：
-     *   · 无障碍读付款结果页 → 「支付宝 支付成功 支付成功￥71.00 天外山 …」
-     *   · 通知监听读通知栏   → 「交易提醒 你有一笔71.00元的支出，点此查看详情。」
-     * 两者原文完全不同，按文字判重会漏，于是同金额同来源就近再判一次。
-     */
+    /** 同金额、时间相邻的候选（不限来源 App，由 [TwinRules] 判定是不是同一笔） */
     @Query(
         """SELECT * FROM transactions
-           WHERE amountCents = :amount AND sourceApp = :app
+           WHERE amountCents = :amount
              AND occurredAt BETWEEN :from AND :to
-           ORDER BY ABS(occurredAt - :center) LIMIT 3"""
+           ORDER BY ABS(occurredAt - :center) LIMIT 5"""
     )
-    suspend fun findTwinCandidates(amount: Long, app: String, from: Long, to: Long, center: Long): List<Transaction>
+    suspend fun findTwinCandidates(amount: Long, from: Long, to: Long, center: Long): List<Transaction>
 
     @Insert
     suspend fun insert(tx: Transaction): Long
@@ -58,75 +53,31 @@ interface TransactionDao {
         // 第一级：原文相同 → 肯定是同一条通知的重发
         if (findDuplicate(tx.rawText, tx.occurredAt - windowMs) != null) return -1L
 
-        // 第二级：无障碍和通知各抓一次 → 同金额、同来源、时间相邻，算同一笔。
-        // 窗口 30 秒足够覆盖「页面渲染」和「通知到达」的时间差；
-        // 再放宽就会吞掉真实连击（菜市场连买两把同样价钱的菜）。
+        // 第二级：两条通道各抓一次（同 App 的页面+通知，或淘宝页面+支付宝通知）
         val twin = findTwinCandidates(
-            tx.amountCents, tx.sourceApp,
-            tx.occurredAt - TWIN_WINDOW_MS, tx.occurredAt + TWIN_WINDOW_MS, tx.occurredAt,
-        ).firstOrNull { old ->
-            // 收支方向不同绝不是同一笔：2 秒内「付 100」和「退 100」会被
-            // SAME_MOMENT 分支合并成一条，等于把退款吞了
-            if (old.type != tx.type) return@firstOrNull false
-            val gap = kotlin.math.abs(old.occurredAt - tx.occurredAt)
-            when {
-                // 同一时刻 + 同金额：无障碍和通知各抓一次，或通知重发。
-                // 这种情况下必然是同一笔，不管商户名有没有、对不对得上。
-                gap <= SAME_MOMENT_MS -> true
-
-                // 时间稍远：只有两边商户名对得上才算同一笔，
-                // 否则宁可当两笔记（菜市场连买两把 5 元的菜）
-                isRealMerchant(old.merchant) && isRealMerchant(tx.merchant) ->
-                    sameMerchantFamily(old.merchant, tx.merchant)
-
-                else -> gap <= NEAR_SIMULTANEOUS_MS
-            }
-        }
+            tx.amountCents,
+            tx.occurredAt - TwinRules.TWIN_WINDOW_MS, tx.occurredAt + TwinRules.TWIN_WINDOW_MS, tx.occurredAt,
+        ).firstOrNull { TwinRules.isTwin(it, tx) }
 
         if (twin != null) {
-            // 已存在的那条可能信息更少（通知版没有商户名），用新的补全，
-            // 但绝不新增一条。原文留信息量更大的那份，方便事后核对。
-            val betterMerchant = isRealMerchant(tx.merchant) && !isRealMerchant(twin.merchant)
-            val betterText = if (tx.rawText.length > twin.rawText.length) tx.rawText else twin.rawText
-            update(
-                twin.copy(
-                    merchant = if (betterMerchant) tx.merchant else twin.merchant,
-                    category = if (betterMerchant) tx.category else twin.category,
-                    rawText = betterText,
-                )
-            )
+            // 绝不新增一条；已存在的那条用新的补全
+            update(TwinRules.merge(twin, tx))
             return -1L
         }
         return insert(tx)
     }
 
-    /** 有真实商户名（不是空、不是「手动记账」、不是「XX（未识别商户）」） */
-    private fun isRealMerchant(m: String): Boolean =
-        m.isNotBlank() && m != "手动记账" && !m.contains("未识别")
-
     /**
-     * 两条记录能不能算同一商户。
-     *
-     * 规则：
-     *   · 任一方没有真实商户名（无障碍抓到了、通知没抓到）→ 算同一商户
-     *   · 两方都有，且互相包含（「星巴克」vs「星巴克(高新店)」）→ 算同一商户
-     *   · 两方都有但完全不同 → 不是同一笔（可能是连买两次）
+     * v4.1 历史修复用：旧版把「你已成功收款」抠成「你已成功」当商户名，
+     * 这里把这些收入记录捞出来重算商户名和备注。
      */
-    private fun sameMerchantFamily(a: String, b: String): Boolean {
-        if (!isRealMerchant(a) || !isRealMerchant(b)) return true
-        return a.contains(b) || b.contains(a)
-    }
-
-    companion object {
-        /** 双通道合并窗口：±30 秒 */
-        const val TWIN_WINDOW_MS = 30_000L
-
-        /** 同一时刻（±2 秒）+ 同金额 → 必然是重复抓取，直接合并 */
-        const val SAME_MOMENT_MS = 2_000L
-
-        /** 两条都没有商户名时，只有「几乎同时」才敢判成同一笔 */
-        const val NEAR_SIMULTANEOUS_MS = 8_000L
-    }
+    @Query(
+        """SELECT * FROM transactions
+           WHERE type = :type AND sourceApp != '手动'
+             AND (merchant LIKE '%成功%' OR merchant LIKE '你已%' OR merchant LIKE '已%'
+                  OR merchant LIKE '%未识别%' OR merchant IN ('支付宝', '微信'))"""
+    )
+    suspend fun suspiciousIncomeMerchants(type: TxType): List<Transaction>
 
     @Update
     suspend fun update(tx: Transaction)
