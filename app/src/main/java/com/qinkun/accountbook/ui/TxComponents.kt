@@ -4,6 +4,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
@@ -16,6 +17,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.qinkun.accountbook.data.Transaction
 import com.qinkun.accountbook.data.TxType
+import com.qinkun.accountbook.util.parseYuanInput
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -54,9 +56,28 @@ fun TxRow(
             Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // v4.0：分类图标，扫一眼就知道是吃饭还是打车
+            Box(
+                Modifier
+                    .size(36.dp)
+                    .background(
+                        if (t.type == TxType.EXPENSE) AppColor.accentSoft else AppColor.income.copy(alpha = 0.12f),
+                        CircleShape,
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(CategoryStyle.emoji(t.category), fontSize = 16.sp)
+            }
+            Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(t.merchant.ifBlank { t.category }, fontSize = 15.sp, color = AppColor.ink)
+                    Text(
+                        t.merchant.ifBlank { t.category },
+                        fontSize = 15.sp, color = AppColor.ink,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
                     if (t.sourceApp.isNotBlank()) {
                         Spacer(Modifier.width(6.dp))
                         Text(
@@ -140,9 +161,21 @@ fun TxDetailDialog(
                 }
 
                 Row {
-                    FilterChip(isExpense, { isExpense = true }, { Text("支出") })
+                    // v4.0：切换收支方向时，原分类不属于新方向就回落到「其他」。
+                    // 以前切成收入后分类仍是「餐饮」，保存后收入统计里冒出一个餐饮。
+                    FilterChip(isExpense, {
+                        if (!isExpense) {
+                            isExpense = true
+                            if (category !in EXPENSE_CATEGORIES) category = "其他"
+                        }
+                    }, { Text("支出") })
                     Spacer(Modifier.width(8.dp))
-                    FilterChip(!isExpense, { isExpense = false }, { Text("收入") })
+                    FilterChip(!isExpense, {
+                        if (isExpense) {
+                            isExpense = false
+                            if (category !in INCOME_CATEGORIES) category = "其他"
+                        }
+                    }, { Text("收入") })
                 }
                 Spacer(Modifier.height(8.dp))
 
@@ -219,7 +252,8 @@ fun TxDetailDialog(
         confirmButton = {
             if (confirmDelete) return@AlertDialog
             TextButton(onClick = {
-                val d = amount.toDoubleOrNull()
+                // 允许「1,299.00」「¥35」这种从别处粘过来的写法
+                val d = parseYuanInput(amount)
                 if (d != null && d > 0) {
                     onSave(
                         tx.copy(
@@ -239,3 +273,4 @@ fun TxDetailDialog(
         }
     )
 }
+

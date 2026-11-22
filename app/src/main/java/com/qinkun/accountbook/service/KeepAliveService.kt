@@ -51,7 +51,12 @@ class KeepAliveService : Service() {
                 // Android 14+ 必须声明前台服务类型
                 startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
             } else {
-                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+                // v4.0 修复：Android 12/13 上以前传的是 DATA_SYNC，但 Manifest 里
+                // 只声明了 specialUse —— 传入的类型不是 Manifest 声明类型的子集时
+                // 系统直接抛 IllegalArgumentException，被下面 catch 住后 stopSelf()，
+                // 结果「后台保活」开关在 Android 12/13 上一直是摆设。
+                // 低版本不传类型，系统会沿用 Manifest 里声明的类型。
+                startForeground(NOTIFICATION_ID, notification)
             }
         } catch (e: Exception) {
             Log.e(TAG, "启动前台服务失败", e)

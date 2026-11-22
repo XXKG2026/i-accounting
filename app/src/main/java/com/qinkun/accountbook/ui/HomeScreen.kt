@@ -31,6 +31,7 @@ import com.qinkun.accountbook.MainViewModel
 import com.qinkun.accountbook.data.Period
 import com.qinkun.accountbook.data.Transaction
 import com.qinkun.accountbook.data.TxType
+import com.qinkun.accountbook.util.parseYuanInput
 
 @Composable
 fun HomeScreen(vm: MainViewModel, modifier: Modifier = Modifier, openAdd: androidx.compose.runtime.MutableState<Boolean>? = null) {
@@ -370,7 +371,7 @@ private fun AddDialog(
         },
         confirmButton = {
             TextButton(onClick = {
-                val d = amount.toDoubleOrNull()
+                val d = parseYuanInput(amount)
                 if (d != null && d > 0) {
                     onConfirm(
                         Math.round(d * 100),

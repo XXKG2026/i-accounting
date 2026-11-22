@@ -9,7 +9,6 @@
         android:name="android.permission.PACKAGE_USAGE_STATS"
         tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <!-- Android 13+ 需要用户授权才能显示常驻通知 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- 开机后把保活服务拉起来：手机重启后如果没人打开 App，

@@ -118,7 +118,7 @@ interface TransactionDao {
     }
 
     companion object {
-        /** 双通道合并窗口：±90 秒 */
+        /** 双通道合并窗口：±30 秒 */
         const val TWIN_WINDOW_MS = 30_000L
 
         /** 同一时刻（±2 秒）+ 同金额 → 必然是重复抓取，直接合并 */
@@ -161,15 +161,20 @@ interface TransactionDao {
      *
      * 不排除「手动」：手动补一笔「天外山 → 餐饮」，下次自动抓到天外山就该沿用餐饮。
      * 之前排除了手动记录，导致「手动教一次」根本不管用。
+     *
+     * v4.0：按收支方向分开记。以前不分方向，在京东买过东西（购物）之后，
+     * 京东的退款也会沿用「购物」—— 而「购物」根本不是收入分类，统计页收入侧
+     * 会冒出一个不存在的分类，编辑框里也选不中。
      */
     @Query(
         """SELECT category FROM transactions
-           WHERE merchant = :merchant AND category != '' AND category != '其他'
+           WHERE merchant = :merchant AND type = :type
+             AND category != '' AND category != '其他'
            GROUP BY category
            ORDER BY COUNT(*) DESC, MAX(occurredAt) DESC
            LIMIT 1"""
     )
-    suspend fun learnedCategory(merchant: String): String?
+    suspend fun learnedCategory(merchant: String, type: TxType): String?
 
     /** 导出用：一次性拿全部流水（列表页用的是 Flow，这里要快照） */
     @Query("SELECT * FROM transactions ORDER BY occurredAt")

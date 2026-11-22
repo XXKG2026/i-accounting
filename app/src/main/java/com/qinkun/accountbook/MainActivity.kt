@@ -29,6 +29,7 @@ import com.qinkun.accountbook.ui.DetailScreen
 import com.qinkun.accountbook.ui.HomeScreen
 import com.qinkun.accountbook.ui.SettingsScreen
 import com.qinkun.accountbook.ui.StatsScreen
+import com.qinkun.accountbook.ui.AppTheme
 
 class MainActivity : ComponentActivity() {
 
@@ -44,7 +45,9 @@ class MainActivity : ComponentActivity() {
         com.qinkun.accountbook.service.PaymentWatcher.restorePending(this)
         openAdd.value = intent?.getBooleanExtra(EXTRA_OPEN_ADD, false) ?: false
         setContent {
-            AppRoot(vm, openAdd)
+            AppTheme {
+                AppRoot(vm, openAdd)
+            }
         }
     }
 

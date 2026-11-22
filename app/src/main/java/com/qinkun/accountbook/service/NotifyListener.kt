@@ -1,6 +1,7 @@
 package com.qinkun.accountbook.service
 
 import android.app.Notification
+import android.content.ComponentName
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
@@ -29,6 +30,12 @@ class NotifyListener : NotificationListenerService() {
         val appName = TransactionParser.APP_NAMES[pkg] ?: return
 
         val n: Notification = sbn.notification ?: return
+        // v4.0：分组摘要通知（「微信 · 3 条新消息」那一条）只是子通知的复述，
+        // 内容和子通知重复，又经常把几笔交易拼在一起，金额会取错 —— 只认子通知。
+        if ((n.flags and Notification.FLAG_GROUP_SUMMARY) != 0) return
+        // 常驻/进度类通知（外卖骑手进度、下载进度、音乐播放）会每隔几秒刷新一次，
+        // 文案里带「实付 ¥35」也不代表又付了一次钱
+        if (sbn.isOngoing) return
         val e = n.extras ?: return
 
         fun str(key: String): String = e.getCharSequence(key)?.toString()?.trim() ?: ""
@@ -73,7 +80,9 @@ class NotifyListener : NotificationListenerService() {
 
                 // 先看这个商户以前被教过什么分类，没教过才走规则猜。
                 // 「天外山」这种供应商名字，词库永远猜不对，靠主人改一次记住。
-                val category = repo.learnedCategory(parsed.merchant)
+                // 入库存的是脱敏后的商户名，查「记忆」也必须用脱敏后的，否则永远对不上
+                val maskedMerchant = PiiMasker.mask(parsed.merchant)
+                val category = repo.learnedCategory(maskedMerchant, parsed.type)
                     ?: TransactionParser.guessCategory(
                         parsed.sourceApp, parsed.merchant, parsed.rawText, parsed.type
                     )
@@ -82,7 +91,7 @@ class NotifyListener : NotificationListenerService() {
                         amountCents = parsed.amountCents,
                         type = parsed.type,
                         category = category,
-                        merchant = PiiMasker.mask(parsed.merchant),
+                        merchant = maskedMerchant,
                         sourceApp = parsed.sourceApp,
                         note = "",
                         occurredAt = at,
@@ -143,7 +152,12 @@ class NotifyListener : NotificationListenerService() {
     }
 
     override fun onListenerDisconnected() {
-        Log.w(TAG, "通知监听已断开")
+        Log.w(TAG, "通知监听已断开，尝试请求系统重新绑定")
+        // v4.0：断开后主动请求重绑。不请求的话，部分 ROM 上要等到下次重启
+        // 或用户手动关开一次权限才会恢复 —— 中间这段时间的账全漏。
+        runCatching {
+            NotificationListenerService.requestRebind(ComponentName(this, NotifyListener::class.java))
+        }.onFailure { Log.e(TAG, "请求重绑失败", it) }
     }
 
     companion object {

@@ -11,6 +11,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import com.qinkun.accountbook.data.CaptureLog
 import com.qinkun.accountbook.data.Repo
 import com.qinkun.accountbook.data.Transaction
+import com.qinkun.accountbook.data.TxType
 import com.qinkun.accountbook.util.PiiMasker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -93,7 +94,8 @@ class PaymentAccessibilityService : AccessibilityService() {
 
         scope.launch {
             runCatching {
-                val category = repo.learnedCategory(parsed.merchant)
+                val maskedMerchant = PiiMasker.mask(parsed.merchant)
+                val category = repo.learnedCategory(maskedMerchant, parsed.type)
                     ?: TransactionParser.guessCategory(
                         parsed.sourceApp, parsed.merchant, parsed.rawText, parsed.type
                     )
@@ -102,7 +104,7 @@ class PaymentAccessibilityService : AccessibilityService() {
                         amountCents = parsed.amountCents,
                         type = parsed.type,
                         category = category,
-                        merchant = PiiMasker.mask(parsed.merchant),
+                        merchant = maskedMerchant,
                         sourceApp = parsed.sourceApp,
                         note = "",
                         occurredAt = now,
@@ -111,6 +113,7 @@ class PaymentAccessibilityService : AccessibilityService() {
                 )
                 val isDup = id < 0
                 val yuan = String.format("%.2f", parsed.amountCents / 100.0)
+                val dir = if (parsed.type == TxType.EXPENSE) "支出" else "收入"
 
                 repo.addCaptureLog(
                     CaptureLog(
@@ -118,7 +121,7 @@ class PaymentAccessibilityService : AccessibilityService() {
                         title = "扫码页（无障碍）",
                         text = PiiMasker.mask(texts.joinToString(" / ")),
                         success = !isDup,
-                        reason = if (isDup) "重复（20 秒内同金额同商户）" else "支出 ¥$yuan · $category",
+                        reason = if (isDup) "重复（20 秒内同金额同商户）" else "$dir ¥$yuan · $category",
                         amountCents = if (isDup) 0 else parsed.amountCents,
                     )
                 )

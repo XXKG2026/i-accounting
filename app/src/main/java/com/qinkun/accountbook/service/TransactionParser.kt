@@ -25,6 +25,20 @@ object TransactionParser {
         "com.unionpay" to "云闪付",
         "me.ele" to "饿了么",
         "com.smile.gifmaker" to "快手",
+        // ---- v4.0 新增：同一平台的「兄弟 App」----
+        // 用户嘴里的「美团/淘宝/京东/拼多多/抖音」常常其实是这些独立 App，
+        // 不收进来，在它们里面付的钱就整笔漏掉。
+        // 下面的包名都是各家应用商店公开页上的正式包名；如在真机上发现不一致，
+        // 以「设置 → 抓取记录」里看到的为准再改。
+        "com.tmall.wireless" to "天猫",
+        "com.taobao.litetao" to "淘宝特价版",
+        "com.sankuai.meituan.takeoutnew" to "美团外卖",
+        "com.jd.jrapp" to "京东金融",
+        "com.ss.android.ugc.aweme.lite" to "抖音极速版",
+        "com.kuaishou.nebula" to "快手极速版",
+        // 商家端：收入（货款、结算）大头从这里来
+        "com.taobao.qianniu" to "千牛",
+        "com.xunmeng.merchant" to "拼多多商家版",
         // 银行 App 待纳入：包名必须逐个在真机上核实，猜错等于没加还会留错代码。
         // 候选：招商银行、建行、工行、农行、中行、交行、邮储、浦发、广发、民生、兴业、平安。
         // 银行通知文案一般是「您尾号 1234 的储蓄卡消费支出人民币 12.34 元」，
@@ -63,6 +77,11 @@ object TransactionParser {
         "向你付款", "付款给你", "已入账", "收到一笔", "收款到账", "已收钱",
         // 「收到」单独用太宽（"收到货"），必须跟钱相关的词连用
         "收到转账", "收到的转账", "收到货款", "收到款项",
+        // v4.0：商家收款码 / 经营收款。微信的真实文案是「微信支付收款0.01元(朋友到店)」，
+        // 一个收入词都不含，以前走 shortPayHint 兜底被记成了**支出**。
+        "微信支付收款", "收钱码收款", "收钱码到账", "二维码收款", "经营收款",
+        // 闲鱼/千牛/拼多多商家：货款结算
+        "货款已到账", "货款到账", "结算到账", "佣金到账", "收益到账",
     )
 
     /** 排除词：命中就不记账（避免误记） */
@@ -364,6 +383,9 @@ object TransactionParser {
             // 「群收款支付成功 ¥50」，同样命中，会被强制判成收入。
             "收到群收款", "群收款已到账", "收到AA收款", "收到 AA 收款",
             "转账给你", "还给你",
+            // v4.0：经营收款 / 平台结算
+            "微信支付收款", "收钱码收款", "收钱码到账", "二维码收款", "经营收款",
+            "货款已到账", "货款到账", "结算到账", "佣金到账", "收益到账",
         ).any { body.contains(it) }
 
         // ③ 付款回执里的状态说明，不是我真的收到钱：
@@ -482,8 +504,10 @@ object TransactionParser {
             if (raw.length !in 2..24) continue
             // 金额
             if (raw.any { it == '¥' || it == '￥' }) continue
-            if (raw.matches(Regex("""[\\d.,\s]+"""))) continue
-            if (raw.matches(Regex("""[\\d.,]+\\s*元"""))) continue
+            // v4.0 修复：原来写成 raw string 里的「\\d」，匹配的是字面反斜杠 + d，
+            // 等于两条都不生效 —— 「23.50元」排在商户名前面时会被当成商户名。
+            if (raw.matches(SCAN_PURE_NUMBER)) continue
+            if (raw.matches(SCAN_YUAN_AMOUNT)) continue
             // 按钮/标签词
             if (SCAN_NOISE.any { raw == it || raw.startsWith(it) }) continue
             // 纯符号
@@ -494,6 +518,8 @@ object TransactionParser {
     }
 
     private val SCAN_ANCHORS = listOf("支付成功", "付款成功", "已支付", "交易成功")
+    private val SCAN_PURE_NUMBER = Regex("""[\d.,\s]+""")
+    private val SCAN_YUAN_AMOUNT = Regex("""[-+]?[\d.,]+\s*元""")
 
     /**
      * 从正文里猜商户名。
@@ -560,11 +586,20 @@ object TransactionParser {
 
                 listOf("工资", "薪资", "代发", "薪酬").any { s.contains(it) } -> "工资"
 
+                // v4.0：明确的理财词要抢在「经营」前 —— 「基金卖出到账」含「卖出」，
+                // 不先拦就会被下面闲鱼的「卖出」规则带去经营
+                listOf("基金", "赎回", "余额宝", "零钱通收益", "理财通", "利息", "分红")
+                    .any { s.contains(it) } -> "理财"
+
                 // ---- 经营：生意上的收款 ----
                 listOf("货款", "订单收入", "销售额", "营业款", "营业",
                        "老顾客", "顾客", "客户", "店主", "店铺", "小店",
                        "商家", "收款码", "商户", "售出", "成交",
-                       "订单收入", "商品收入").any { s.contains(it) } -> "经营"
+                       "订单收入", "商品收入",
+                       // v4.0：商家收款码、二手卖货、商家端 App、内容创作收入
+                       "微信支付收款", "收钱码", "二维码收款", "经营收款", "朋友到店",
+                       "卖出", "结算", "千牛", "拼多多商家版",
+                       "佣金", "创作收益", "带货", "稿费", "创作者", "橱窗").any { s.contains(it) } -> "经营"
                 listOf("红包", "恭喜发财").any { s.contains(it) } -> "红包"
 
                 // ---- 转账：私人往来 ----
