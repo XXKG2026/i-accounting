@@ -69,14 +69,24 @@ fun AppTheme(content: @Composable () -> Unit) {
  *   · 首页的概览卡是白底，直接用支出的砖红即可。
  */
 object BalanceStyle {
-    /** 深色底上的赤字色 */
-    val deficitOnDark = Color(0xFFFF8A80)
+    /**
+     * 赤字时概览卡的底色：深红。
+     *
+     * 为什么不把数字改成红字（试过了）：概览卡是深绿底 #4F6F63，
+     * 红字压上去对比度只有 2.4~3.3:1，大字门槛 3:1 都勉强，砖红更是 1.02:1 —— 根本看不清。
+     * 换成深红底 + 白字是 7.61:1，比正数的 5.55:1 还清楚；而且财务上「赤字」
+     * 本来就是整块标红，比换个字色更像那回事。
+     */
+    val deficitCard = Color(0xFF8C3A2E)
 
-    /** 统计页概览卡（深绿底）：正数白字，赤字亮红 */
-    fun onDark(balance: Long): Color =
-        if (balance < 0) deficitOnDark else Color.White
+    /** 概览卡底色：正数深绿，赤字深红 */
+    fun cardBg(balance: Long): Color =
+        if (balance < 0) deficitCard else AppColor.accentDeep
 
-    /** 首页概览卡（白底）：正数墨色，赤字砖红 */
+    /** 概览卡上的字：两种底色上白字都够亮（7.61 / 5.55） */
+    val onCard: Color = Color.White
+
+    /** 首页概览卡（白底）：正数墨色，赤字砖红（5.68:1） */
     fun onLight(balance: Long): Color =
         if (balance < 0) AppColor.expense else AppColor.ink
 

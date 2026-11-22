@@ -125,16 +125,16 @@ fun StatsScreen(vm: MainViewModel, modifier: Modifier = Modifier) {
             Surface(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
                 shape = RoundedCornerShape(18.dp),
-                color = AppColor.accentDeep,
+                // 赤字整卡转深红：深绿底上放红字看不清（2.4:1），换底才够醒目
+                color = BalanceStyle.cardBg(balance),
             ) {
                 Column(Modifier.padding(horizontal = 18.dp, vertical = 16.dp)) {
                     Text("结余", fontSize = 12.sp, color = Color.White.copy(alpha = 0.75f))
                     Spacer(Modifier.height(2.dp))
-                    // 赤字（结余为负）要标红：深绿底上白字看不出正负差别
                     Text(
                         BalanceStyle.text(balance),
                         fontSize = 28.sp, fontWeight = FontWeight.Bold,
-                        color = BalanceStyle.onDark(balance),
+                        color = BalanceStyle.onCard,
                     )
                     Spacer(Modifier.height(12.dp))
                     Row(Modifier.fillMaxWidth()) {

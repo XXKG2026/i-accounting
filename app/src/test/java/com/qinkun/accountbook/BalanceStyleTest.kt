@@ -9,25 +9,33 @@ import org.junit.Test
 /**
  * 结余的配色与文案。
  *
- * 重点是「赤字要看得出来」：以前正负一个颜色，深绿底上白字
- * 「-773.29」和「773.29」扫一眼分不出来。
+ * 核心是「赤字要看得出来」。试过两种做法：
+ *   · 深绿底上换红字 —— 对比度只有 2.4~3.3:1，大字门槛都勉强
+ *   · 整卡换深红底、白字 —— 7.61:1，比正数的 5.55:1 还清楚（采用这个）
  */
 class BalanceStyleTest {
 
     @Test
-    fun dark_background_highlights_deficit() {
-        // 统计页概览卡：深绿底
+    fun card_turns_red_when_in_deficit() {
         assertNotEquals(
-            "深色底上赤字必须和正数不同色",
-            BalanceStyle.onDark(-77329),
-            BalanceStyle.onDark(77329),
+            "赤字必须换底色，否则和正数分不出来",
+            BalanceStyle.cardBg(-73802),
+            BalanceStyle.cardBg(73802),
         )
-        assertEquals("正数保持白字", BalanceStyle.onDark(0), BalanceStyle.onDark(77329))
+        assertEquals("赤字卡是深红", BalanceStyle.deficitCard, BalanceStyle.cardBg(-1))
+        assertEquals("正数卡是深绿", AppColor.accentDeep, BalanceStyle.cardBg(0))
+        assertEquals("正数卡是深绿", AppColor.accentDeep, BalanceStyle.cardBg(73802))
+    }
+
+    @Test
+    fun card_text_stays_white_on_both() {
+        // 两种底色上白字都够亮：深红 7.61:1 / 深绿 5.55:1
+        assertEquals(androidx.compose.ui.graphics.Color.White, BalanceStyle.onCard)
     }
 
     @Test
     fun light_background_highlights_deficit() {
-        // 首页概览卡：白底
+        // 首页概览卡是白底，不需要换底，只换字色（砖红 5.68:1）
         assertNotEquals(
             "浅色底上赤字必须和正数不同色",
             BalanceStyle.onLight(-77329),
@@ -38,26 +46,19 @@ class BalanceStyleTest {
     }
 
     @Test
-    fun deficit_on_dark_is_lighter_than_the_expense_red() {
-        // 深绿底上用砖红会发暗，所以深色底走的是更亮的珊瑚红 —— 两者不能是同一个色
-        assertNotEquals(
-            "深色底的赤字色应该比砖红更亮",
-            BalanceStyle.deficitOnDark,
-            AppColor.expense,
-        )
-    }
-
-    @Test
     fun text_shows_minus_only_when_negative() {
         assertEquals("-773.29", BalanceStyle.text(-77329))
         assertEquals("773.29", BalanceStyle.text(77329))
         assertEquals("0.00", BalanceStyle.text(0))
         assertEquals("-0.01", BalanceStyle.text(-1))
+        assertEquals("1234567.89", BalanceStyle.text(123456789))
     }
 
     @Test
-    fun text_keeps_thousands_separator_out() {
-        // 与既有 fmtYuan 一致：不带千分位
-        assertEquals("1234567.89", BalanceStyle.text(123456789))
+    fun zero_is_not_a_deficit() {
+        // 结余正好 0 不算亏，卡片保持绿色
+        assertEquals(AppColor.accentDeep, BalanceStyle.cardBg(0))
+        assertEquals(AppColor.ink, BalanceStyle.onLight(0))
+        assertEquals("0.00", BalanceStyle.text(0))
     }
 }
