@@ -108,6 +108,23 @@ object ScreenPageParser {
     /** 出现在金额前后的这些词说明它不是实付金额 */
     private val NOT_PAID = Regex("""优惠|立减|红包|原价|已省|节省|省了|积分|返现|返利|券|抵扣|余额|可用|额度|满\d|运费|配送费|打包费|共减""")
 
+    /**
+     * 配送/订单状态行（美团外卖常见：「商家正在备餐，骑手到店取货中」）。
+     * 这类节点既不是商户名、也不是金额，必须整行排除 —— 曾把「商家正在备餐，骑手到店取货中」
+     * 当成商户名记进账本。
+     */
+    private val DELIVERY_STATE = Regex(
+        """骑手|配送|备餐|接单|取货|送达|派送|正在赶往|出餐|取餐|准时宝|预计.{0,6}送|订单详情|收货后|查看权益|成长值|外卖福利|订单已支付"""
+    )
+
+    /**
+     * 推荐位/促销卡片的文案。「云酱酱·云南小锅米线 ¥15.96 3.9折」这种卡片上的钱不是实付金额，
+     * 曾把卡片价 ¥15.96 记成一笔 15.00 的支出。
+     */
+    private val PROMO_CARD = Regex(
+        """\d+\s*减\s*\d+|满\s*\d+\s*减|折|[券]|福利|专享|赠送|赠|热销|团购|回头客|月售|半年售|件价|km|分钟|积分|成长值|第\s*\d+\s*名|免单|奖励|达标|本店|[0-9]\s*元"""
+    )
+
     private fun toCents(s: String): Long? {
         val d = s.replace(",", "").toDoubleOrNull() ?: return null
         if (d <= 0.0 || d > 1_000_000.0) return null
@@ -144,20 +161,49 @@ object ScreenPageParser {
             return !NOT_PAID.containsMatchIn(ns[i]) && !NOT_PAID.containsMatchIn(prev)
         }
 
-        // 2. 整节点金额（先锚点之后，再整页）
-        for (range in listOf(start until ns.size, ns.indices)) {
-            for (i in range) {
-                val t = ns[i].trim()
-                val m = AMOUNT_NODE.find(t) ?: continue
-                val moneyLike = t.contains('¥') || t.contains('￥') || t.contains('.') || t.endsWith("元")
-                if (!moneyLike || !ok(i)) continue
-                toCents(m.groupValues[1])?.let { return it }
-            }
+        /** 推荐卡/配送状态行附近的数字一律不算实付金额 */
+        fun promoish(i: Int): Boolean {
+            val n = ns[i]
+            val prev = ns.getOrNull(i - 1).orEmpty()
+            val next = ns.getOrNull(i + 1).orEmpty()
+            // 只看「自己」和「前一个节点」：金额节点后面常紧跟广告条（领取优惠券），不能因此否掉真金额
+            return PROMO_CARD.containsMatchIn(n) || DELIVERY_STATE.containsMatchIn(n) ||
+                PROMO_CARD.containsMatchIn(prev) || DELIVERY_STATE.containsMatchIn(prev)
         }
 
-        // 3. 节点内的 ¥X
+        // 2. 支付方式紧邻的金额（结果页固定结构：支付成功 / ¥26.90 / 支付方式 / 招商银行信用卡(7161)）
+        for (i in ns.indices) {
+            val next = ns.getOrNull(i + 1) ?: continue
+            if (!PAY_METHOD_LABEL.containsMatchIn(next)) continue
+            val t = ns[i].trim()
+            val m = AMOUNT_NODE.find(t) ?: continue
+            val moneyLike = t.contains('¥') || t.contains('￥') || t.contains('.') || t.endsWith("元")
+            if (!moneyLike || promoish(i)) continue
+            toCents(m.groupValues[1])?.let { return it }
+        }
+
+        // 3. 锚点之后一小段窗口内的整节点金额（窗口外多是推荐卡）
+        val windowEnd = (start + 6).coerceAtMost(ns.size)
+        for (i in start until windowEnd) {
+            val t = ns[i].trim()
+            val m = AMOUNT_NODE.find(t) ?: continue
+            val moneyLike = t.contains('¥') || t.contains('￥') || t.contains('.') || t.endsWith("元")
+            if (!moneyLike || !ok(i) || promoish(i)) continue
+            toCents(m.groupValues[1])?.let { return it }
+        }
+
+        // 4. 整页兜底：仍需躲开推荐卡与配送状态行
+        for (i in ns.indices) {
+            val t = ns[i].trim()
+            val m = AMOUNT_NODE.find(t) ?: continue
+            val moneyLike = t.contains('¥') || t.contains('￥') || t.contains('.') || t.endsWith("元")
+            if (!moneyLike || !ok(i) || promoish(i)) continue
+            toCents(m.groupValues[1])?.let { return it }
+        }
+
+        // 5. 节点内的 ¥X
         for (i in start until ns.size) {
-            if (!ok(i)) continue
+            if (!ok(i) || promoish(i)) continue
             CURRENCY_IN.find(ns[i])?.let { m -> toCents(m.groupValues[1])?.let { return it } }
         }
         return null
@@ -199,28 +245,54 @@ object ScreenPageParser {
     /** 锚点前面常见的页面标题 / 导航按钮 */
     private val BACKWARD_NOISE = Regex("""支付|付款|返回|关闭|结果|收银|订单|完成|详情""")
 
-    /** 按节点挑商户名：锚点之后第一个像名字的 */
-    fun extractMerchant(nodes: List<String>, anchorIdx: Int): String? {
-        val fromScan = TransactionParser.extractMerchantFromScanNodes(
-            nodes.filterNot { n ->
-                MERCHANT_NOISE.any { n.trim() == it } || TIME_NODE.containsMatchIn(n) ||
-                    AD_NODE.containsMatchIn(n) || PAY_METHODS.any { n.contains(it) }
+    /** 按节点挑商户名：美团类页面优先往锚点前面找（店名在「支付成功」上面），其余 App 先往后找 */
+    fun extractMerchant(nodes: List<String>, anchorIdx: Int, preferBackward: Boolean = false): String? {
+        fun scanBackward(): String? {
+            for (i in (anchorIdx - 1) downTo 0) {
+                val raw = nodes[i].trim()
+                if (!usableMerchant(raw)) continue
+                return raw
             }
-        )
-        if (fromScan != null) return fromScan
-        // 有些页面商户名在锚点前面（支付宝：「天外山」「付款成功」「¥71.00」）
-        for (i in (anchorIdx - 1) downTo 0) {
-            val raw = nodes[i].trim()
-            if (raw.length !in 2..24) continue
-            if (MERCHANT_NOISE.any { raw == it } || AD_NODE.containsMatchIn(raw) || TIME_NODE.containsMatchIn(raw)) continue
-            if (PAY_METHODS.any { raw.contains(it) }) continue
-            if (raw.any { it == '¥' || it == '￥' } || raw.none { it.isLetter() }) continue
-            if (AMOUNT_NODE.matches(raw)) continue
-            if (BACKWARD_NOISE.containsMatchIn(raw)) continue
-            return raw
+            return null
         }
-        return null
+
+        // 正向：从锚点后面第一个「可用」节点起，配送状态/推荐卡/按钮一律跳过
+        fun scanForward(): String? {
+            val from = (anchorIdx + 1).coerceAtLeast(0)
+            for (i in from until nodes.size) {
+                val raw = nodes[i].trim()
+                if (!usableMerchant(raw)) continue
+                return raw
+            }
+            return null
+        }
+
+        return if (preferBackward) scanBackward() ?: scanForward() else scanForward() ?: scanBackward()
     }
+
+    /** 商户名候选是否可用（配送状态、推荐卡、按钮、金额、括号标签一律不可用） */
+    private fun usableMerchant(raw: String): Boolean {
+        if (raw.length !in 2..24) return false
+        if (MERCHANT_NOISE.any { raw == it }) return false
+        if (AD_NODE.containsMatchIn(raw) || TIME_NODE.containsMatchIn(raw)) return false
+        if (PAY_METHODS.any { raw.contains(it) }) return false
+        // 配送/订单状态行不是商户名：「商家正在备餐，骑手到店取货中」
+        if (DELIVERY_STATE.containsMatchIn(raw)) return false
+        // 推荐卡文案不是商户名：「双流区川渝火锅热销榜第 5 名」「150 减 6」
+        if (PROMO_CARD.containsMatchIn(raw)) return false
+        if (raw.any { it == '¥' || it == '￥' }) return false
+        if (raw.none { it.isLetter() }) return false
+        if (AMOUNT_NODE.matches(raw)) return false
+        if (BACKWARD_NOISE.containsMatchIn(raw)) return false
+        if (raw.startsWith("[") || raw.startsWith("【")) return false
+        if (raw == "回复" || raw.startsWith("邀您")) return false
+        // 带感叹号的营销长句（「10元专属福利！送酒通用」）不是店名
+        if (raw.contains('！') || raw.contains('!')) return false
+        return true
+    }
+
+    /** 支付方式标签 */
+    private val PAY_METHOD_LABEL = Regex("""支付方式|付款方式|支付渠道|扣款方式""")
 
     /** 支付方式：「零钱」「花呗」「招商银行信用卡(1234)」 */
     fun extractPayMethod(nodes: List<String>): String? =
@@ -255,15 +327,19 @@ object ScreenPageParser {
 
         val cents = extractAmount(clean, anchorIdx) ?: return Outcome.Rejected("结果页上没找到金额", raw)
 
-        val merchant = extractMerchant(clean, anchorIdx)
+        val merchant = extractMerchant(clean, anchorIdx, preferBackward = pkg.startsWith("com.sankuai"))
             ?: if (pkg == "com.taobao.taobao" && clean.any { it.contains("闪购") }) "淘宝闪购" else appName
 
+        val isMeituan = pkg.startsWith("com.sankuai")
+        val payMethod = extractPayMethod(clean)
         val scene = when {
             pkg == "com.taobao.taobao" && clean.any { it.contains("闪购") } -> "淘宝闪购"
             pkg in PAY_PKGS -> "扫码/付款码"
+            // 有支付方式的页是付款回执，不是下单页 —— 记「付款」，别写成「下单」
+            isMeituan && payMethod != null -> "$appName 付款"
             else -> "$appName 下单"
         }
-        val note = listOfNotNull(scene, extractPayMethod(clean)).distinct().joinToString(" · ")
+        val note = listOfNotNull(scene, payMethod).distinct().joinToString(" · ")
 
         return Outcome.Ok(
             TransactionParser.Parsed(
